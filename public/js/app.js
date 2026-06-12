@@ -3,6 +3,8 @@
 (function () {
   const loginScreen = document.getElementById('screen-login');
   const appShell = document.getElementById('app-shell');
+  let sessionsList = [];
+  let deferredPrompt = null;
 
   // ---- Web Share Target Parser (PWA) ----
   function parseSharedText(text, url) {
@@ -89,11 +91,9 @@
     const url = params.get('url');
 
     if (title || text || url) {
-      // Clear URL params immediately so refreshing doesn't re-trigger
       window.history.replaceState({}, document.title, window.location.pathname);
 
       if (!Auth.currentUser) {
-        // Save to sessionStorage to process after login
         sessionStorage.setItem('pending_share', JSON.stringify({ title, text, url }));
       } else {
         processShare({ title, text, url });
@@ -103,6 +103,31 @@
 
   // ---- Boot ----
   async function boot() {
+    // PWA Install listeners
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      deferredPrompt = e;
+      const dismissed = localStorage.getItem('pwa-dismissed') === 'true';
+      if (!dismissed) {
+        document.getElementById('pwa-install-banner').classList.remove('hidden');
+      }
+    });
+
+    document.getElementById('pwa-btn-dismiss').addEventListener('click', () => {
+      document.getElementById('pwa-install-banner').classList.add('hidden');
+      localStorage.setItem('pwa-dismissed', 'true');
+    });
+
+    document.getElementById('pwa-btn-install').addEventListener('click', async () => {
+      document.getElementById('pwa-install-banner').classList.add('hidden');
+      if (deferredPrompt) {
+        deferredPrompt.prompt();
+        await deferredPrompt.userChoice;
+        deferredPrompt = null;
+      }
+    });
+
+    // Share target
     handleShareTarget();
     if (Auth.init()) {
       showApp();
@@ -114,7 +139,6 @@
   function showLogin() {
     loginScreen.classList.add('active');
     appShell.classList.add('hidden');
-    // Remove history banner if exists
     const banner = document.getElementById('session-history-banner');
     if (banner) banner.remove();
   }
@@ -122,6 +146,7 @@
   async function loadSessions() {
     try {
       const { sessions } = await API.getSessions();
+      sessionsList = sessions;
       const select = document.getElementById('session-select');
       
       const wasViewingActive = !UserView.selectedSessionId || UserView.selectedSessionId === UserView.activeSessionId;
@@ -130,8 +155,6 @@
       const active = sessions.find(s => s.active);
       UserView.activeSessionId = active ? active.id : null;
       
-      // If they were viewing the active session, switch to the new active session.
-      // Otherwise, only switch if the selected session no longer exists in DB.
       if (wasViewingActive) {
         UserView.selectedSessionId = UserView.activeSessionId;
       } else if (!sessions.some(s => s.id === UserView.selectedSessionId)) {
@@ -149,6 +172,30 @@
     } catch (err) {
       console.error('Failed to load sessions:', err);
     }
+  }
+
+  function renderStatusPipeline(status) {
+    const statusFlow = ['adding', 'locked', 'ordered', 'delivered', 'settled'];
+    const currentIndex = statusFlow.indexOf(status || 'adding');
+    
+    const steps = document.querySelectorAll('.status-step');
+    const lines = document.querySelectorAll('.status-line');
+
+    steps.forEach((step, idx) => {
+      step.classList.remove('active', 'completed');
+      if (idx === currentIndex) {
+        step.classList.add('active');
+      } else if (idx < currentIndex) {
+        step.classList.add('completed');
+      }
+    });
+
+    lines.forEach((line, idx) => {
+      line.classList.remove('completed');
+      if (idx < currentIndex) {
+        line.classList.add('completed');
+      }
+    });
   }
 
   function updateSessionStatusUI() {
@@ -171,6 +218,11 @@
     } else if (banner) {
       banner.remove();
     }
+
+    // Update status pipeline indicators
+    const selectedSession = sessionsList.find(s => s.id === UserView.selectedSessionId);
+    const status = selectedSession ? selectedSession.status : 'adding';
+    renderStatusPipeline(status);
   }
 
   async function showApp() {
@@ -194,6 +246,12 @@
         const { settings } = await API.getSettings();
         document.getElementById('admin-upi-id').value = settings.upiId || '';
       } catch (err) { /* ignore */ }
+    }
+
+    // Initialize View Triggers
+    UserView.init();
+    if (isAdmin) {
+      AdminView.init();
     }
 
     // Load data
@@ -252,9 +310,7 @@
     Auth.logout();
     if (eventSource) eventSource.close();
     showLogin();
-    // Reset tabs
     switchTab('home');
-    // Clear badges
     clearNavBadges();
   });
 
@@ -267,15 +323,12 @@
   });
 
   function switchTab(tabName) {
-    // Update nav active state
     navItems.forEach(btn => btn.classList.toggle('active', btn.dataset.tab === tabName));
 
-    // Show tab content
     document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
     const targetTab = document.getElementById(`tab-${tabName}`);
     if (targetTab) targetTab.classList.add('active');
 
-    // Refresh data for certain tabs
     if (tabName === 'payments') {
       UserView.renderPayments();
     }
@@ -334,7 +387,6 @@
     try {
       await API.setSettings({ upiId });
       showToast('✅ UPI ID saved!');
-      // Refresh payments to update QR Code/Payment Button
       if (document.getElementById('tab-payments').classList.contains('active')) {
         UserView.renderPayments();
       }
@@ -364,24 +416,23 @@
   function setupSSEHandlers() {
     onSSE('order-added', async () => {
       await UserView.refresh();
-      if (Auth.isAdmin()) AdminView.renderOrderBoard();
+      if (Auth.isAdmin()) AdminView.renderAll();
     });
 
     onSSE('order-updated', async () => {
       await UserView.refresh();
-      if (Auth.isAdmin()) AdminView.renderOrderBoard();
+      if (Auth.isAdmin()) AdminView.renderAll();
     });
 
     onSSE('order-removed', async () => {
       await UserView.refresh();
-      if (Auth.isAdmin()) AdminView.renderOrderBoard();
+      if (Auth.isAdmin()) AdminView.renderAll();
     });
 
     onSSE('order-status-changed', async (data) => {
       await UserView.refresh();
       if (Auth.isAdmin()) AdminView.renderAll();
 
-      // Notify the affected user
       if (data.order && data.order.userId === Auth.getUserId()) {
         const statusLabels = {
           'out-of-stock': '🚫 Out of Stock',
@@ -404,10 +455,12 @@
     });
 
     onSSE('bill-updated', async () => {
-      // Refresh payment tab if visible
       const paymentsTab = document.getElementById('tab-payments');
       if (paymentsTab.classList.contains('active')) {
         UserView.renderPayments();
+      }
+      if (Auth.isAdmin()) {
+        AdminView.renderPaymentAdmin();
       }
     });
 
@@ -424,7 +477,7 @@
     onSSE('session-reset', async (data) => {
       if (data && data.activeSessionId) {
         if (UserView.selectedSessionId === data.activeSessionId) {
-          return; // Already up to date (e.g. if we are the admin who triggered it)
+          return;
         }
         UserView.selectedSessionId = data.activeSessionId;
       }
@@ -438,12 +491,48 @@
     onSSE('user-joined', (data) => {
       showToast(`👋 ${data.user.name} joined!`);
     });
+
+    // P3: Session status changed
+    onSSE('session-status-changed', async (data) => {
+      await loadSessions();
+      await UserView.refresh();
+      if (Auth.isAdmin()) AdminView.renderAll();
+      showToast(`🚦 Session status is now: ${data.status.toUpperCase()}`);
+    });
+
+    // P4: Payment marked / confirmed
+    onSSE('payment-updated', async () => {
+      const paymentsTab = document.getElementById('tab-payments');
+      if (paymentsTab.classList.contains('active')) {
+        UserView.renderPayments();
+      }
+      if (Auth.isAdmin()) {
+        AdminView.renderPaymentAdmin();
+      }
+    });
+
+    // P5: Favorite starred
+    onSSE('favorite-added', async () => {
+      await UserView.loadFavorites();
+      UserView.renderFavoritesList();
+    });
+
+    // P6: Threshold targets updated
+    onSSE('session-thresholds-updated', async () => {
+      await UserView.refresh();
+    });
+
+    // P8: Split mode updated
+    onSSE('session-split-mode-updated', async () => {
+      await UserView.refresh();
+      UserView.renderPayments();
+      if (Auth.isAdmin()) AdminView.renderAll();
+    });
   }
 
   // ---- Start ----
   boot();
 
-  // Expose AppController globally for other views
   window.AppController = {
     loadSessions,
     switchTab,
@@ -457,7 +546,6 @@ function updateNavBadges() {
   const userId = Auth.getUserId();
   const excludedStatuses = ['out-of-stock', 'returned', 'not-delivered'];
 
-  // Mine tab badge — count of my active items
   const myActiveCount = orders.filter(o => o.userId === userId && !excludedStatuses.includes(o.status)).length;
   const mineTab = document.querySelector('.nav-item[data-tab="my-orders"]');
   let mineBadge = mineTab.querySelector('.nav-badge');
@@ -472,7 +560,6 @@ function updateNavBadges() {
     mineBadge.remove();
   }
 
-  // Pay tab badge — my estimated total
   const myTotal = orders
     .filter(o => o.userId === userId && !excludedStatuses.includes(o.status))
     .reduce((sum, o) => sum + o.estimatedPrice * o.qty, 0);

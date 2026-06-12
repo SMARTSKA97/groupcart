@@ -68,11 +68,64 @@
       </button>
     </header>
 
+    <!-- PWA Install Banner (P9) -->
+    <div id="pwa-install-banner" class="pwa-install-banner hidden">
+      <div class="pwa-banner-content">
+        <span class="pwa-icon">📱</span>
+        <div class="pwa-text">
+          <strong>Install GroupCart</strong>
+          <p>Add to your home screen for quick access</p>
+        </div>
+      </div>
+      <div class="pwa-banner-actions">
+        <button id="pwa-btn-dismiss" class="btn btn-sm btn-text">Not Now</button>
+        <button id="pwa-btn-install" class="btn btn-sm btn-primary">Install</button>
+      </div>
+    </div>
+
+    <!-- Session Status Bar (P3) -->
+    <div class="status-pipeline-container" id="status-pipeline-container">
+      <div class="status-pipeline">
+        <div class="status-step active" data-status="adding" title="People can add items">
+          <div class="step-dot">1</div>
+          <span class="step-label">Adding</span>
+        </div>
+        <div class="status-line"></div>
+        <div class="status-step" data-status="locked" title="Cart is locked for ordering">
+          <div class="step-dot">2</div>
+          <span class="step-label">Locked</span>
+        </div>
+        <div class="status-line"></div>
+        <div class="status-step" data-status="ordered" title="Admin has placed the order">
+          <div class="step-dot">3</div>
+          <span class="step-label">Ordered</span>
+        </div>
+        <div class="status-line"></div>
+        <div class="status-step" data-status="delivered" title="Items have been delivered">
+          <div class="step-dot">4</div>
+          <span class="step-label">Delivered</span>
+        </div>
+        <div class="status-line"></div>
+        <div class="status-step" data-status="settled" title="Bills are split and payments settled">
+          <div class="step-dot">5</div>
+          <span class="step-label">Settled</span>
+        </div>
+      </div>
+    </div>
+
     <!-- Screens -->
     <main class="main-content">
 
       <!-- TAB: Home / All Orders -->
       <div id="tab-home" class="tab-content active">
+        <!-- Platform Free Delivery Thresholds (P6) -->
+        <div id="platform-thresholds-container" class="platform-thresholds-container hidden">
+          <div class="thresholds-header">
+            <h3>🚚 Free Delivery Progress</h3>
+          </div>
+          <div id="threshold-bars-list" class="threshold-bars-list"></div>
+        </div>
+
         <div class="section-header">
           <h2>All Orders</h2>
           <span class="item-count" id="total-items-count">0 items</span>
@@ -88,6 +141,17 @@
 
       <!-- TAB: My Orders -->
       <div id="tab-my-orders" class="tab-content">
+        <!-- Favorites Quick Add Section (P5) -->
+        <div class="favorites-section hidden" id="favorites-section">
+          <button class="favorites-toggle-btn" id="btn-favorites-toggle">
+            <span>⭐ Quick Add from Favorites</span>
+            <span class="chevron" id="favorites-chevron">▼</span>
+          </button>
+          <div class="favorites-container hidden" id="favorites-container">
+            <div id="favorites-list" class="favorites-list"></div>
+          </div>
+        </div>
+
         <div class="section-header">
           <h2>My Orders</h2>
           <span class="item-count" id="my-items-count">0 items</span>
@@ -106,11 +170,23 @@
         <div class="section-header">
           <h2>💰 Payments</h2>
         </div>
+        
+        <!-- User Payment Confirmation Panel (P4) -->
+        <div id="user-payment-action-box" class="payment-action-box hidden">
+          <button type="button" class="btn btn-primary btn-block" id="btn-mark-paid">I Have Paid</button>
+        </div>
+
         <div id="payment-summary" class="payment-summary">
           <div class="empty-state">
             <div class="empty-icon">⏳</div>
             <p>Waiting for admin to enter bills</p>
           </div>
+        </div>
+
+        <!-- Payment Tracking (P4) -->
+        <div id="payment-tracking-container" class="payment-tracking-container hidden">
+          <h3>💳 Payment Statuses</h3>
+          <div id="payment-tracking-list" class="payment-tracking-list"></div>
         </div>
       </div>
 
@@ -120,6 +196,44 @@
           <h2>⚙️ Admin Panel</h2>
         </div>
         <div class="admin-sections">
+
+          <!-- Admin: Dashboard Summary (P10) -->
+          <div class="admin-card">
+            <h3>📈 Platform Summary</h3>
+            <div id="admin-platform-summary-cards" class="platform-summary-cards"></div>
+            <div class="dashboard-actions" style="margin-top: 1rem; display: flex; gap: 0.5rem; flex-wrap: wrap;">
+              <button type="button" class="btn btn-sm btn-primary" id="btn-copy-order-summary" style="display: flex; align-items: center; gap: 0.25rem;">
+                📋 Copy Order Summary
+              </button>
+              <button type="button" class="btn btn-sm btn-secondary" id="btn-copy-payment-summary" style="display: flex; align-items: center; gap: 0.25rem;">
+                💰 Copy Payment Summary
+              </button>
+            </div>
+          </div>
+
+          <!-- Admin: Split Mode Selector (P8) -->
+          <div class="admin-card">
+            <h3>⚖️ Split Mode</h3>
+            <div class="split-mode-selector">
+              <label class="split-mode-option">
+                <input type="radio" name="split-mode" value="proportional" checked />
+                <span>Proportional</span>
+              </label>
+              <label class="split-mode-option">
+                <input type="radio" name="split-mode" value="equal" />
+                <span>Equal Split</span>
+              </label>
+              <label class="split-mode-option">
+                <input type="radio" name="split-mode" value="custom" />
+                <span>Custom Split</span>
+              </label>
+            </div>
+            <div id="custom-split-inputs" class="custom-split-inputs hidden" style="margin-top: 1rem;">
+              <h4 style="margin-bottom: 0.5rem; font-size: 0.85rem;">Custom Splits (₹)</h4>
+              <div id="custom-split-fields-list" style="display: flex; flex-direction: column; gap: 0.5rem;"></div>
+              <button type="button" class="btn btn-sm btn-primary" id="btn-save-custom-splits" style="margin-top: 0.5rem;">Save Splits</button>
+            </div>
+          </div>
 
           <!-- Admin: Order Board -->
           <div class="admin-card">
@@ -131,6 +245,14 @@
           <div class="admin-card">
             <h3>💵 Enter Final Bills</h3>
             <div id="admin-bills-form"></div>
+          </div>
+
+          <!-- Admin: Delivery Targets (P6) -->
+          <div class="admin-card">
+            <h3>🚚 Delivery Targets</h3>
+            <p class="text-muted" style="font-size: 0.85rem; margin-bottom: 0.5rem;">Set free delivery threshold amounts (₹) per app.</p>
+            <div id="admin-threshold-inputs-list" style="display: flex; flex-direction: column; gap: 0.5rem;"></div>
+            <button type="button" class="btn btn-sm btn-primary" id="btn-save-thresholds" style="margin-top: 0.75rem;">Save Targets</button>
           </div>
 
           <!-- Admin: Manage Apps -->
@@ -199,6 +321,24 @@
       <div class="modal-handle"></div>
       <h3>Add Item</h3>
       <form id="add-item-form" autocomplete="off">
+        <!-- URL Import Assistant (P1) -->
+        <div class="input-group font-import-group" style="background: rgba(255, 255, 255, 0.03); border: 1px dashed var(--border); padding: 0.75rem; border-radius: 8px; margin-bottom: 1rem;">
+          <label style="font-size: 0.8rem; margin-bottom: 0.25rem;">✨ Product Import Assistant</label>
+          <div class="url-import-row" style="display: flex; gap: 0.5rem; margin-top: 0.25rem;">
+            <input type="url" id="item-import-url" placeholder="Paste Swiggy/Blinkit/Zepto URL" style="flex: 1; min-width: 0; font-size: 0.85rem;" />
+            <button type="button" class="btn btn-sm btn-primary" id="btn-detect-url" style="padding: 0 0.75rem;">Detect</button>
+          </div>
+          <div id="import-preview-card" class="import-preview-card hidden" style="margin-top: 0.5rem; padding: 0.5rem; border-radius: 6px; background: rgba(0, 255, 100, 0.05); font-size: 0.8rem; border: 1px solid rgba(0, 255, 100, 0.2);">
+            <div class="preview-spinner hidden" id="preview-spinner" style="display: flex; align-items: center; gap: 0.5rem; color: var(--text-secondary);">
+              <span class="spinner-icon">🔄</span> Fetching item details...
+            </div>
+            <div class="preview-content" id="preview-content" style="display: flex; align-items: center; gap: 0.5rem; color: #4ade80;">
+              <span class="preview-check">✓</span>
+              <span id="preview-details">Amul Gold Milk 500ml — ₹34</span>
+            </div>
+          </div>
+        </div>
+
         <div class="input-group">
           <label>Delivery App</label>
           <div id="app-picker" class="app-picker"></div>

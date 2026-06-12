@@ -11,6 +11,25 @@ const AdminView = {
     'not-delivered':  { label: 'Not Delivered', icon: '❌', cssClass: 'status-not-delivered' },
   },
 
+  init() {
+    this.initSplitModeSelector();
+    
+    const btnSaveThresholds = document.getElementById('btn-save-thresholds');
+    if (btnSaveThresholds) {
+      btnSaveThresholds.addEventListener('click', () => this.saveThresholds());
+    }
+
+    const btnCopyOrder = document.getElementById('btn-copy-order-summary');
+    if (btnCopyOrder) {
+      btnCopyOrder.addEventListener('click', () => this.copyOrderSummary());
+    }
+
+    const btnCopyPayment = document.getElementById('btn-copy-payment-summary');
+    if (btnCopyPayment) {
+      btnCopyPayment.addEventListener('click', () => this.copyPaymentSummary());
+    }
+  },
+
   // ---- Render Order Board ----
   async renderOrderBoard() {
     const container = document.getElementById('admin-order-board');
@@ -133,6 +152,7 @@ const AdminView = {
       await UserView.refresh();
       this.renderOrderBoard();
       this.renderBillsForm();
+      this.renderDashboard();
     } catch (err) {
       showToast('❌ Failed to update status');
     }
@@ -147,6 +167,7 @@ const AdminView = {
       await UserView.refresh();
       this.renderOrderBoard();
       this.renderBillsForm();
+      this.renderDashboard();
     } catch (err) {
       showToast('❌ Failed to update status');
     }
@@ -159,6 +180,7 @@ const AdminView = {
       showToast(`✅ ${result.updated} item(s) confirmed!`);
       await UserView.refresh();
       this.renderOrderBoard();
+      this.renderDashboard();
     } catch (err) {
       showToast('❌ Failed to bulk confirm');
     }
@@ -193,8 +215,388 @@ const AdminView = {
       await UserView.refresh();
       this.renderOrderBoard();
       this.renderBillsForm();
+      this.renderDashboard();
     } else {
       showToast('ℹ️ No price changes detected');
+    }
+  },
+
+  // ---- Session Status transitions (P3) ----
+  renderSessionStatusControls() {
+    let card = document.getElementById('admin-status-card');
+    const container = document.querySelector('#tab-admin .admin-sections');
+    if (!container) return;
+
+    if (!card) {
+      card = document.createElement('div');
+      card.id = 'admin-status-card';
+      card.className = 'admin-card';
+      container.insertBefore(card, container.firstChild);
+    }
+
+    const currentStatus = UserView.currentSession?.status || 'adding';
+    const isReadOnly = UserView.selectedSessionId !== UserView.activeSessionId;
+
+    const statusLabels = {
+      'adding': 'Adding Items',
+      'locked': 'Locked',
+      'ordered': 'Ordered',
+      'delivered': 'Delivered',
+      'settled': 'Settled'
+    };
+
+    let buttonsHtml = '';
+    if (!isReadOnly) {
+      const statusFlow = ['adding', 'locked', 'ordered', 'delivered', 'settled'];
+      const currentIndex = statusFlow.indexOf(currentStatus);
+      
+      if (currentIndex < statusFlow.length - 1) {
+        const nextStatus = statusFlow[currentIndex + 1];
+        buttonsHtml = `
+          <button class="btn btn-primary btn-block" style="margin-top: 0.75rem;" onclick="AdminView.updateStatus('${nextStatus}')">
+            Advance Status to: ${statusLabels[nextStatus]} →
+          </button>
+        `;
+      }
+      if (currentIndex > 0) {
+        const prevStatus = statusFlow[currentIndex - 1];
+        buttonsHtml += `
+          <button class="btn btn-sm btn-text" style="margin-top: 0.5rem; width: 100%; text-align: center;" onclick="AdminView.updateStatus('${prevStatus}')">
+            ← Revert to: ${statusLabels[prevStatus]}
+          </button>
+        `;
+      }
+    } else {
+      buttonsHtml = `<p class="text-muted" style="font-size: 0.85rem; margin-top: 0.5rem;">📜 Session settled and closed.</p>`;
+    }
+
+    card.innerHTML = `
+      <h3>🚦 Session Status Control</h3>
+      <p style="font-size: 0.85rem; color: var(--text-secondary);">Current Status: <strong style="color: var(--accent-primary); text-transform: uppercase;">${statusLabels[currentStatus] || currentStatus}</strong></p>
+      ${buttonsHtml}
+    `;
+  },
+
+  async updateStatus(newStatus) {
+    if (newStatus === 'settled' && !confirm('Are you sure you want to settle the session? This will close the group cart.')) {
+      return;
+    }
+    try {
+      await API.updateSessionStatus(newStatus, Auth.getUserName());
+      showToast(`✅ Session status updated to ${newStatus.toUpperCase()}`);
+      await UserView.refresh();
+      this.renderAll();
+    } catch (e) {
+      showToast('❌ Failed to update session status');
+    }
+  },
+
+  // ---- Confirm Payments (P4) ----
+  async renderPaymentAdmin() {
+    let card = document.getElementById('admin-payments-card');
+    const container = document.querySelector('#tab-admin .admin-sections');
+    if (!container) return;
+
+    if (!card) {
+      card = document.createElement('div');
+      card.id = 'admin-payments-card';
+      card.className = 'admin-card';
+      const statusCard = document.getElementById('admin-status-card');
+      if (statusCard && statusCard.nextSibling) {
+        container.insertBefore(card, statusCard.nextSibling);
+      } else {
+        container.appendChild(card);
+      }
+    }
+
+    const isReadOnly = UserView.selectedSessionId !== UserView.activeSessionId;
+
+    let settlement;
+    try {
+      settlement = await API.getSettlement(UserView.selectedSessionId);
+    } catch (e) {
+      card.innerHTML = `<h3>💳 Confirm Payments</h3><p class="text-muted">Error loading payments</p>`;
+      return;
+    }
+
+    if (!settlement.users || settlement.users.length === 0) {
+      card.innerHTML = `<h3>💳 Confirm Payments</h3><p class="text-muted">No active orders</p>`;
+      return;
+    }
+
+    let payments = [];
+    try {
+      const res = await API.getPayments(UserView.selectedSessionId);
+      payments = res.payments || [];
+    } catch (e) {}
+
+    let html = '<h3>💳 Confirm Payments</h3>';
+    html += `<div style="display: flex; flex-direction: column; gap: 0.75rem; margin-top: 0.5rem;">`;
+
+    let activeOwer = false;
+    for (const user of settlement.users) {
+      if (user.total <= 0) continue;
+      activeOwer = true;
+      
+      const payment = payments.find(p => p.userId === user.userId);
+      let statusText = '<span class="status-badge unpaid">Unpaid</span>';
+      let actionBtn = '';
+
+      if (payment) {
+        if (payment.confirmedByAdmin) {
+          statusText = `<span class="status-badge confirmed">Confirmed</span>`;
+          if (!isReadOnly) {
+            actionBtn = `<button class="btn btn-sm btn-text" onclick="AdminView.setPaymentConfirm('${payment.id}', false)" style="color: var(--danger); margin-left: 0.5rem; padding: 0.15rem 0.4rem;">Unconfirm</button>`;
+          }
+        } else {
+          statusText = `<span class="status-badge paid">Paid</span>`;
+          if (!isReadOnly) {
+            actionBtn = `<button class="btn btn-sm btn-primary" onclick="AdminView.setPaymentConfirm('${payment.id}', true)" style="padding: 0.2rem 0.5rem; font-size: 0.75rem;">Confirm</button>`;
+          }
+        }
+      }
+
+      html += `
+        <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(255, 255, 255, 0.01); border: 1px solid var(--border); padding: 0.5rem 0.75rem; border-radius: var(--radius-sm);">
+          <div>
+            <div style="font-weight: 600; font-size: 0.85rem;">👤 ${escapeHtml(user.userName)}</div>
+            <div style="font-size: 0.75rem; color: var(--text-secondary); margin-top: 0.15rem;">Owes ${formatCurrency(user.total)}</div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 0.5rem;">
+            ${statusText}
+            ${actionBtn}
+          </div>
+        </div>
+      `;
+    }
+
+    if (!activeOwer) {
+      html += `<p class="text-muted" style="font-size:0.85rem;">No payments to confirm (everyone owes ₹0).</p>`;
+    }
+
+    html += `</div>`;
+    card.innerHTML = html;
+  },
+
+  async setPaymentConfirm(paymentId, confirmed) {
+    try {
+      await API.confirmPayment(paymentId, confirmed, Auth.getUserName());
+      showToast(confirmed ? '✅ Payment confirmed!' : '↩️ Payment unconfirmed');
+      await this.renderPaymentAdmin();
+      // Force user view sync
+      UserView.renderPayments();
+    } catch (e) {
+      showToast('❌ Failed to update payment status');
+    }
+  },
+
+  // ---- Split Modes Wiring (P8) ----
+  initSplitModeSelector() {
+    const radios = document.querySelectorAll('input[name="split-mode"]');
+    radios.forEach(radio => {
+      radio.addEventListener('change', async (e) => {
+        const mode = e.target.value;
+        try {
+          await API.setSplitMode(mode);
+          showToast(`⚖️ Split mode changed to: ${mode}`);
+          
+          if (mode === 'custom') {
+            document.getElementById('custom-split-inputs').classList.remove('hidden');
+            await this.renderCustomSplitFields();
+          } else {
+            document.getElementById('custom-split-inputs').classList.add('hidden');
+            await UserView.refresh();
+            UserView.renderPayments();
+            this.renderPaymentAdmin();
+          }
+        } catch (err) {
+          showToast('❌ Failed to update split mode');
+        }
+      });
+    });
+
+    const btnSaveSplits = document.getElementById('btn-save-custom-splits');
+    if (btnSaveSplits) {
+      btnSaveSplits.addEventListener('click', () => this.saveCustomSplits());
+    }
+  },
+
+  async renderCustomSplitFields() {
+    const container = document.getElementById('custom-split-fields-list');
+    
+    let settlement;
+    try {
+      settlement = await API.getSettlement(UserView.selectedSessionId);
+    } catch (e) {
+      return;
+    }
+
+    const customSplits = settlement.session?.customSplits || {};
+    const isReadOnly = UserView.selectedSessionId !== UserView.activeSessionId;
+
+    let html = '';
+    for (const user of settlement.users) {
+      const existingVal = customSplits[user.userId] !== undefined ? customSplits[user.userId] : user.total;
+      html += `
+        <div style="display: flex; justify-content: space-between; align-items: center; gap: 1rem;">
+          <span style="font-size: 0.85rem; font-weight: 500;">👤 ${escapeHtml(user.userName)}</span>
+          <input type="number" class="custom-split-input-val" data-user-id="${user.userId}" 
+                 value="${existingVal}" min="0" step="1" style="width: 100px; text-align: right;" ${isReadOnly ? 'disabled' : ''} />
+        </div>
+      `;
+    }
+    container.innerHTML = html;
+  },
+
+  async saveCustomSplits() {
+    const inputs = document.querySelectorAll('.custom-split-input-val');
+    const customSplits = {};
+    inputs.forEach(input => {
+      customSplits[input.dataset.userId] = parseFloat(input.value) || 0;
+    });
+
+    try {
+      await API.setSplitMode('custom', customSplits);
+      showToast('✅ Custom splits saved!');
+      await UserView.refresh();
+      UserView.renderPayments();
+      this.renderPaymentAdmin();
+    } catch (e) {
+      showToast('❌ Failed to save splits');
+    }
+  },
+
+  syncSplitModeUI(session) {
+    if (!session) return;
+    const mode = session.splitMode || 'proportional';
+    const radio = document.querySelector(`input[name="split-mode"][value="${mode}"]`);
+    if (radio) radio.checked = true;
+
+    const customBox = document.getElementById('custom-split-inputs');
+    if (mode === 'custom') {
+      customBox.classList.remove('hidden');
+      this.renderCustomSplitFields();
+    } else {
+      customBox.classList.add('hidden');
+    }
+  },
+
+  // ---- Threshold targets (P6) ----
+  renderThresholdConfigFields(session) {
+    const container = document.getElementById('admin-threshold-inputs-list');
+    const thresholds = session?.freeDeliveryThresholds || {};
+    const apps = UserView.apps;
+
+    if (apps.length === 0) {
+      container.innerHTML = `<p class="text-muted" style="font-size: 0.85rem;">No apps configured to set targets.</p>`;
+      return;
+    }
+
+    const isReadOnly = UserView.selectedSessionId !== UserView.activeSessionId;
+
+    let html = '';
+    for (const app of apps) {
+      const val = thresholds[app.id] || 0;
+      html += `
+        <div style="display: flex; justify-content: space-between; align-items: center; gap: 1rem;">
+          <span style="font-size: 0.85rem; font-weight: 500;">${app.icon} ${escapeHtml(app.name)}</span>
+          <input type="number" class="threshold-input-val" data-app-id="${app.id}" 
+                 value="${val > 0 ? val : ''}" placeholder="e.g. 500" min="0" step="10" style="width: 120px; text-align: right;" ${isReadOnly ? 'disabled' : ''} />
+        </div>
+      `;
+    }
+    container.innerHTML = html;
+  },
+
+  async saveThresholds() {
+    const inputs = document.querySelectorAll('.threshold-input-val');
+    const thresholds = {};
+    inputs.forEach(input => {
+      const val = parseFloat(input.value) || 0;
+      if (val > 0) {
+        thresholds[input.dataset.appId] = val;
+      }
+    });
+
+    try {
+      await API.setThresholds(thresholds);
+      showToast('✅ Delivery targets saved!');
+      await UserView.refresh();
+    } catch (e) {
+      showToast('❌ Failed to save targets');
+    }
+  },
+
+  // ---- Summary copy functions (P10) ----
+  renderDashboard() {
+    const container = document.getElementById('admin-platform-summary-cards');
+    const orders = UserView.orders;
+    const apps = UserView.apps;
+
+    if (orders.length === 0) {
+      container.innerHTML = `<p class="text-muted" style="font-size:0.85rem;">No active orders yet.</p>`;
+      return;
+    }
+
+    const appGroups = {};
+    const excludedStatuses = ['out-of-stock', 'returned', 'not-delivered'];
+    
+    for (const order of orders) {
+      if (excludedStatuses.includes(order.status)) continue;
+      if (!appGroups[order.appId]) appGroups[order.appId] = { count: 0, total: 0 };
+      appGroups[order.appId].count += order.qty;
+      appGroups[order.appId].total += order.estimatedPrice * order.qty;
+    }
+
+    let html = '';
+    let hasData = false;
+
+    for (const appId in appGroups) {
+      const app = apps.find(a => a.id === appId) || { name: appId, icon: '📦' };
+      const group = appGroups[appId];
+      hasData = true;
+
+      html += `
+        <div class="platform-summary-card">
+          <div class="platform-summary-icon">${app.icon}</div>
+          <div class="platform-summary-name">${escapeHtml(app.name)}</div>
+          <div class="platform-summary-value">${formatCurrency(group.total)}</div>
+          <div class="platform-summary-count">${group.count} ${group.count === 1 ? 'item' : 'items'}</div>
+        </div>
+      `;
+    }
+
+    if (hasData) {
+      container.innerHTML = html;
+    } else {
+      container.innerHTML = `<p class="text-muted" style="font-size:0.85rem;">No active items.</p>`;
+    }
+  },
+
+  async copyOrderSummary() {
+    const text = generateOrderSummaryText(UserView.orders, UserView.apps);
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast('✅ Order Summary copied to clipboard!');
+    } catch (e) {
+      showToast('❌ Failed to copy summary');
+    }
+  },
+
+  async copyPaymentSummary() {
+    let settlement;
+    try {
+      settlement = await API.getSettlement(UserView.selectedSessionId);
+    } catch (e) {
+      showToast('❌ Failed to load settlement');
+      return;
+    }
+    const text = generatePaymentSummaryText(settlement);
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast('✅ Payment Summary copied to clipboard!');
+    } catch (e) {
+      showToast('❌ Failed to copy summary');
     }
   },
 
@@ -292,8 +694,8 @@ const AdminView = {
 
     if (saved > 0) {
       showToast(`✅ ${saved} bill(s) saved!`);
-      // Refresh payment view
       UserView.renderPayments();
+      this.renderPaymentAdmin();
     }
   },
 
@@ -396,5 +798,12 @@ const AdminView = {
     this.renderOrderBoard();
     this.renderBillsForm();
     this.renderManageApps();
+    this.renderSessionStatusControls();
+    this.renderPaymentAdmin();
+    this.renderDashboard();
+    if (UserView.currentSession) {
+      this.syncSplitModeUI(UserView.currentSession);
+      this.renderThresholdConfigFields(UserView.currentSession);
+    }
   },
 };

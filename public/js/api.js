@@ -108,6 +108,70 @@ const API = {
       body: JSON.stringify(settings),
     });
   },
+
+  // Scraper
+  scrapeUrl(url) {
+    return this._fetch('/api/scrape-url', {
+      method: 'POST',
+      body: JSON.stringify({ url }),
+    });
+  },
+
+  // Session status
+  updateSessionStatus(status, adminName) {
+    return this._fetch('/api/session/status', {
+      method: 'PUT',
+      body: JSON.stringify({ status, adminName }),
+    });
+  },
+
+  // Payments
+  getPayments(sessionId) {
+    const q = sessionId ? `?sessionId=${sessionId}` : '';
+    return this._fetch(`/api/payments${q}`);
+  },
+  markPaid(userId, userName, amount) {
+    return this._fetch('/api/payments/mark-paid', {
+      method: 'POST',
+      body: JSON.stringify({ userId, userName, amount }),
+    });
+  },
+  confirmPayment(id, confirmed, adminName) {
+    return this._fetch(`/api/payments/${id}/confirm`, {
+      method: 'PUT',
+      body: JSON.stringify({ confirmed, adminName }),
+    });
+  },
+
+  // Favorites
+  getFavorites(userId) {
+    return this._fetch(`/api/favorites?userId=${userId}`);
+  },
+  addFavorite(favorite) {
+    return this._fetch('/api/favorites', {
+      method: 'POST',
+      body: JSON.stringify(favorite),
+    });
+  },
+  removeFavorite(id) {
+    return this._fetch(`/api/favorites/${id}`, { method: 'DELETE' });
+  },
+
+  // Thresholds
+  setThresholds(thresholds) {
+    return this._fetch('/api/session/thresholds', {
+      method: 'PUT',
+      body: JSON.stringify({ thresholds }),
+    });
+  },
+
+  // Split Mode
+  setSplitMode(splitMode, customSplits) {
+    return this._fetch('/api/session/split-mode', {
+      method: 'PUT',
+      body: JSON.stringify({ splitMode, customSplits }),
+    });
+  },
 };
 
 // ===== SSE (Server-Sent Events) =====
@@ -131,7 +195,9 @@ function connectSSE() {
     'order-added', 'order-updated', 'order-removed',
     'order-status-changed', 'order-bulk-status-changed',
     'bill-updated', 'user-joined',
-    'app-added', 'app-removed', 'session-reset'
+    'app-added', 'app-removed', 'session-reset',
+    'session-status-changed', 'payment-updated', 'favorite-added',
+    'session-thresholds-updated', 'session-split-mode-updated'
   ];
   for (const event of events) {
     eventSource.addEventListener(event, (e) => {

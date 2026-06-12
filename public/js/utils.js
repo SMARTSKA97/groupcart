@@ -70,3 +70,44 @@ function generatePaymentSummaryText(settlementData) {
   text += '━━━━━━━━━━━━━━━━━━━━━━\n';
   return text;
 }
+
+function generateOrderSummaryText(orders, apps) {
+  if (!orders || orders.length === 0) return 'No active orders.';
+  const appsMap = {};
+  for (const app of apps) {
+    appsMap[app.id] = app;
+  }
+  
+  // Group active orders by app, then by productName
+  const activeOrders = orders.filter(o => !['out-of-stock', 'returned', 'not-delivered'].includes(o.status));
+  if (activeOrders.length === 0) return 'No active orders.';
+
+  const ordersByApp = {};
+  for (const order of activeOrders) {
+    if (!ordersByApp[order.appId]) ordersByApp[order.appId] = {};
+    const appOrders = ordersByApp[order.appId];
+    if (!appOrders[order.productName]) {
+      appOrders[order.productName] = 0;
+    }
+    appOrders[order.productName] += order.qty;
+  }
+
+  let text = '🛒 GroupCart — Order Placement Summary\n';
+  text += '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n';
+
+  for (const appId in ordersByApp) {
+    const appName = appsMap[appId]?.name || appId;
+    const appIcon = appsMap[appId]?.icon || '📦';
+    text += `${appIcon} ${appName.toUpperCase()}\n`;
+    text += '─────────────────────────────────\n';
+    
+    const items = ordersByApp[appId];
+    for (const name in items) {
+      text += `• ${name}  ×  ${items[name]}\n`;
+    }
+    text += '\n';
+  }
+
+  text += '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━';
+  return text;
+}

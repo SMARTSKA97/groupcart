@@ -5,6 +5,9 @@ const UserView = {
   orders: [],
   selectedAppId: null,
   editSelectedAppId: null,
+  favorites: [],
+  mySettlementTotal: 0,
+  currentSession: null,
 
   // Status display config
   STATUS_CONFIG: {
@@ -13,6 +16,32 @@ const UserView = {
     'out-of-stock':  { label: 'Out of Stock',  icon: '🚫', cssClass: 'status-oos' },
     'returned':      { label: 'Returned',      icon: '↩️', cssClass: 'status-returned' },
     'not-delivered':  { label: 'Not Delivered', icon: '❌', cssClass: 'status-not-delivered' },
+  },
+
+  init() {
+    // P1: URL Import Assistant
+    const btnDetect = document.getElementById('btn-detect-url');
+    if (btnDetect) {
+      btnDetect.addEventListener('click', () => this.handleUrlImport());
+    }
+    const urlInput = document.getElementById('item-import-url');
+    if (urlInput) {
+      urlInput.addEventListener('paste', () => {
+        setTimeout(() => this.handleUrlImport(), 100);
+      });
+    }
+
+    // P4: Mark Paid button
+    const btnMarkPaid = document.getElementById('btn-mark-paid');
+    if (btnMarkPaid) {
+      btnMarkPaid.addEventListener('click', () => this.handleMarkPaid());
+    }
+
+    // P5: Favorites Toggle
+    const btnFavsToggle = document.getElementById('btn-favorites-toggle');
+    if (btnFavsToggle) {
+      btnFavsToggle.addEventListener('click', () => this.toggleFavorites());
+    }
   },
 
   async loadApps() {
@@ -205,20 +234,30 @@ const UserView = {
 
       for (const order of sortedOrders) {
         const isExcluded = this._isExcluded(order);
+        const isFav = this.favorites.some(f => f.appId === order.appId && f.productName.toLowerCase() === order.productName.toLowerCase());
 
-        html += `<div class="order-card own-order ${isExcluded ? 'order-excluded' : ''}" data-order-id="${order.id}" ${!isExcluded ? `onclick="UserView.openEditModal('${order.id}')"` : ''}>
-          <div class="order-card-body">
-            <div class="order-product ${isExcluded ? 'text-strikethrough' : ''}">${escapeHtml(order.productName)}</div>
-            <div class="order-meta">
-              <span>×${order.qty}</span>
+        html += `<div class="order-card own-order ${isExcluded ? 'order-excluded' : ''}" data-order-id="${order.id}">
+          <div class="order-card-body" ${!isExcluded ? `onclick="UserView.openEditModal('${order.id}')"` : ''}>
+            <div style="display: flex; align-items: center; gap: 0.25rem;">
+              <button class="star-btn ${isFav ? 'starred' : ''}" onclick="event.stopPropagation(); UserView.toggleFavoriteItem('${order.id}')" title="${isFav ? 'Remove from favorites' : 'Add to favorites'}" style="background: none; border: none; color: #f59e0b; font-size: 1.15rem; cursor: pointer; padding: 0;">${isFav ? '★' : '☆'}</button>
+              <div class="order-product ${isExcluded ? 'text-strikethrough' : ''}">${escapeHtml(order.productName)}</div>
+            </div>
+            <div class="order-meta" style="margin-top: 0.5rem; display: flex; align-items: center; gap: 0.75rem;">
+              ${isExcluded ? `<span>×${order.qty}</span>` : `
+                <div class="compact-qty-stepper" onclick="event.stopPropagation()" style="display: inline-flex; align-items: center; background: rgba(255,255,255,0.05); border: 1px solid var(--border); border-radius: 4px; height: 26px;">
+                  <button type="button" class="compact-qty-btn" onclick="UserView.updateQuantity('${order.id}', -1)" style="border: none; background: none; color: var(--text-primary); width: 24px; height: 100%; cursor: pointer; font-weight: 700;">−</button>
+                  <span class="compact-qty-val" id="qty-val-${order.id}" style="font-size: 0.8rem; font-weight: 700; width: 20px; text-align: center;">${order.qty}</span>
+                  <button type="button" class="compact-qty-btn" onclick="UserView.updateQuantity('${order.id}', 1)" style="border: none; background: none; color: var(--text-primary); width: 24px; height: 100%; cursor: pointer; font-weight: 700;">+</button>
+                </div>
+              `}
               ${this._statusBadge(order)}
             </div>
             ${order.status === 'out-of-stock' && order.statusNote ? `<div class="order-status-note">📝 ${escapeHtml(order.statusNote)}</div>` : ''}
             ${order.link ? `<a class="order-link" href="${escapeHtml(order.link)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">🔗 Open link</a>` : ''}
           </div>
-          <div>
+          <div style="text-align: right; display: flex; flex-direction: column; justify-content: center; align-items: flex-end;">
             <div class="order-price ${isExcluded ? 'text-strikethrough text-muted-price' : ''}">${formatCurrency(order.estimatedPrice * order.qty)}</div>
-            ${order.qty > 1 ? `<div class="order-qty">${formatCurrency(order.estimatedPrice)} each</div>` : ''}
+            ${order.qty > 1 ? `<div class="order-qty" style="font-size: 0.7rem; color: var(--text-secondary);">${formatCurrency(order.estimatedPrice)} each</div>` : ''}
           </div>
         </div>`;
       }
@@ -243,6 +282,9 @@ const UserView = {
             <div class="empty-icon">⏳</div>
             <p>No orders to settle</p>
           </div>`;
+        // Hide tracking as well
+        document.getElementById('payment-tracking-container').classList.add('hidden');
+        document.getElementById('user-payment-action-box').classList.add('hidden');
         return;
       }
 
@@ -285,6 +327,9 @@ const UserView = {
           <p class="empty-sub">Once bills are entered, your payment will show here</p>
         </div>`;
         container.innerHTML = html;
+        // Hide tracking since bill isn't set yet
+        document.getElementById('payment-tracking-container').classList.add('hidden');
+        document.getElementById('user-payment-action-box').classList.add('hidden');
         return;
       }
 
@@ -431,6 +476,10 @@ const UserView = {
 
       container.innerHTML = html;
       this._lastSettlement = data;
+
+      // Render payment tracking status panel
+      await this.renderPaymentTracking(data);
+
     } catch (err) {
       container.innerHTML = `<div class="empty-state"><p>Error loading settlement</p></div>`;
     }
@@ -448,6 +497,361 @@ const UserView = {
       showToast('✅ Summary copied!');
     } catch {
       showToast('❌ Could not copy');
+    }
+  },
+
+  // ---- Payment Status Tracking (P4) ----
+  async renderPaymentTracking(settlementData) {
+    const listContainer = document.getElementById('payment-tracking-list');
+    const containerBox = document.getElementById('payment-tracking-container');
+    const actionBox = document.getElementById('user-payment-action-box');
+
+    if (!settlementData || !settlementData.users || settlementData.users.length === 0) {
+      containerBox.classList.add('hidden');
+      actionBox.classList.add('hidden');
+      return;
+    }
+
+    containerBox.classList.remove('hidden');
+
+    try {
+      const { payments } = await API.getPayments(this.selectedSessionId);
+      
+      let listHtml = '';
+      const myUserId = Auth.getUserId();
+      let myPaymentStatus = 'unpaid';
+
+      for (const user of settlementData.users) {
+        const payment = payments.find(p => p.userId === user.userId);
+        let badgeClass = 'unpaid';
+        let badgeLabel = 'Unpaid';
+
+        if (payment) {
+          if (payment.confirmedByAdmin) {
+            badgeClass = 'confirmed';
+            badgeLabel = 'Confirmed';
+          } else {
+            badgeClass = 'paid';
+            badgeLabel = 'Paid';
+          }
+        }
+
+        if (user.userId === myUserId) {
+          myPaymentStatus = badgeClass;
+        }
+
+        listHtml += `
+          <div class="payment-track-row">
+            <span class="payment-track-user">👤 ${escapeHtml(user.userName)}</span>
+            <div class="payment-track-right">
+              <span class="payment-track-amount">${formatCurrency(user.total)}</span>
+              <span class="status-badge ${badgeClass}">${badgeLabel}</span>
+            </div>
+          </div>
+        `;
+      }
+
+      listContainer.innerHTML = listHtml;
+
+      const isReadOnly = this.selectedSessionId !== this.activeSessionId;
+      const myTotal = settlementData.users.find(u => u.userId === myUserId)?.total || 0;
+
+      // Allow marking paid only if session isn't read-only, user owes money, and hasn't paid yet
+      if (!isReadOnly && myTotal > 0 && myPaymentStatus === 'unpaid') {
+        actionBox.classList.remove('hidden');
+        this.mySettlementTotal = myTotal;
+      } else {
+        actionBox.classList.add('hidden');
+      }
+
+    } catch (e) {
+      console.error('Error rendering payment tracking:', e);
+    }
+  },
+
+  async handleMarkPaid() {
+    const btn = document.getElementById('btn-mark-paid');
+    btn.disabled = true;
+    btn.textContent = 'Submitting...';
+
+    try {
+      await API.markPaid(Auth.getUserId(), Auth.getUserName(), this.mySettlementTotal);
+      showToast('✅ Marked as paid! Waiting for admin confirmation.');
+      await this.renderPayments();
+    } catch (e) {
+      showToast('❌ Failed to mark payment');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'I Have Paid';
+    }
+  },
+
+  // ---- Favorites Handling (P5) ----
+  async loadFavorites() {
+    try {
+      const { favorites } = await API.getFavorites(Auth.getUserId());
+      this.favorites = favorites || [];
+    } catch (e) {
+      this.favorites = [];
+    }
+  },
+
+  renderFavoritesList() {
+    const section = document.getElementById('favorites-section');
+    const list = document.getElementById('favorites-list');
+
+    if (this.favorites.length === 0) {
+      section.classList.add('hidden');
+      return;
+    }
+
+    section.classList.remove('hidden');
+
+    let html = '';
+    for (const fav of this.favorites) {
+      const app = this.apps.find(a => a.id === fav.appId) || { icon: '📦', name: fav.appId };
+      html += `
+        <div class="favorite-item-chip" onclick="UserView.addFromFavorite('${fav.id}')">
+          <div style="display:flex; align-items:center; gap:0.4rem; overflow:hidden; flex: 1;">
+            <span>${app.icon}</span>
+            <span class="favorite-item-name">${escapeHtml(fav.productName)}</span>
+          </div>
+          <div class="favorite-item-right">
+            <span class="favorite-item-price">${formatCurrency(fav.estimatedPrice)}</span>
+            <button class="btn-fav-delete" onclick="event.stopPropagation(); UserView.deleteFavorite('${fav.id}')" title="Delete favorite">🗑️</button>
+          </div>
+        </div>
+      `;
+    }
+    list.innerHTML = html;
+  },
+
+  async toggleFavoriteItem(orderId) {
+    const order = this.orders.find(o => o.id === orderId);
+    if (!order) return;
+
+    const userId = Auth.getUserId();
+    const existing = this.favorites.find(f => f.appId === order.appId && f.productName.toLowerCase() === order.productName.toLowerCase());
+
+    try {
+      if (existing) {
+        await API.removeFavorite(existing.id);
+        showToast('⭐ Removed from Favorites');
+      } else {
+        await API.addFavorite({
+          userId,
+          appId: order.appId,
+          productName: order.productName,
+          estimatedPrice: order.estimatedPrice,
+          link: order.link
+        });
+        showToast('⭐ Added to Favorites');
+      }
+      await this.loadFavorites();
+      this.renderMyOrders();
+      this.renderFavoritesList();
+    } catch (err) {
+      showToast('❌ Failed to update favorite');
+    }
+  },
+
+  toggleFavorites() {
+    const container = document.getElementById('favorites-container');
+    const chevron = document.getElementById('favorites-chevron');
+    const toggleBtn = document.getElementById('btn-favorites-toggle');
+    
+    const isHidden = container.classList.contains('hidden');
+    if (isHidden) {
+      container.classList.remove('hidden');
+      chevron.textContent = '▲';
+      toggleBtn.classList.add('expanded');
+      this.renderFavoritesList();
+    } else {
+      container.classList.add('hidden');
+      chevron.textContent = '▼';
+      toggleBtn.classList.remove('expanded');
+    }
+  },
+
+  async deleteFavorite(id) {
+    try {
+      await API.removeFavorite(id);
+      showToast('🗑️ Favorite deleted');
+      await this.loadFavorites();
+      this.renderFavoritesList();
+      this.renderMyOrders();
+    } catch (e) {
+      showToast('❌ Failed to delete favorite');
+    }
+  },
+
+  async addFromFavorite(id) {
+    if (this.selectedSessionId !== this.activeSessionId) {
+      showToast('📜 Past sessions are read-only');
+      return;
+    }
+    const fav = this.favorites.find(f => f.id === id);
+    if (!fav) return;
+
+    try {
+      const order = {
+        userId: Auth.getUserId(),
+        userName: Auth.getUserName(),
+        appId: fav.appId,
+        productName: fav.productName,
+        link: fav.link,
+        qty: 1,
+        estimatedPrice: fav.estimatedPrice,
+      };
+      await API.addOrder(order);
+      showToast('✅ Added from Favorites!');
+      await this.refresh();
+    } catch (e) {
+      showToast('❌ Failed to add item');
+    }
+  },
+
+  // ---- Delivery Target Progress Bars (P6) ----
+  renderThresholdBars(session) {
+    const container = document.getElementById('platform-thresholds-container');
+    const list = document.getElementById('threshold-bars-list');
+
+    if (!session || this.orders.length === 0) {
+      container.classList.add('hidden');
+      return;
+    }
+
+    const thresholds = session.freeDeliveryThresholds || {};
+    const activeAppsWithThresholds = this.apps.filter(app => thresholds[app.id] > 0);
+
+    if (activeAppsWithThresholds.length === 0) {
+      container.classList.add('hidden');
+      return;
+    }
+
+    const appTotals = {};
+    const excludedStatuses = ['out-of-stock', 'returned', 'not-delivered'];
+    for (const order of this.orders) {
+      if (excludedStatuses.includes(order.status)) continue;
+      if (!appTotals[order.appId]) appTotals[order.appId] = 0;
+      appTotals[order.appId] += order.estimatedPrice * order.qty;
+    }
+
+    let html = '';
+    let hasAnyBar = false;
+
+    for (const app of activeAppsWithThresholds) {
+      const total = appTotals[app.id] || 0;
+      const target = thresholds[app.id];
+      const pct = Math.min(100, (total / target) * 100);
+      const isReached = total >= target;
+      hasAnyBar = true;
+
+      let statusMsg = '';
+      if (isReached) {
+        statusMsg = `<span style="color:#10b981; font-weight:700;">🎉 Free delivery unlocked!</span>`;
+      } else {
+        statusMsg = `<span>Need <strong>${formatCurrency(target - total)}</strong> more for free delivery</span>`;
+      }
+
+      html += `
+        <div class="threshold-bar-item">
+          <div class="threshold-bar-info">
+            <span class="threshold-bar-platform">${app.icon} ${escapeHtml(app.name)}</span>
+            <span>${formatCurrency(total)} / ${formatCurrency(target)}</span>
+          </div>
+          <div class="threshold-bar-progress-bg">
+            <div class="threshold-bar-progress-fill ${isReached ? 'reached' : ''}" style="width: ${pct}%;"></div>
+          </div>
+          <div style="font-size:0.7rem; color:var(--text-secondary); margin-top:0.15rem; display:flex; justify-content:space-between;">
+            ${statusMsg}
+          </div>
+        </div>
+      `;
+    }
+
+    if (hasAnyBar) {
+      list.innerHTML = html;
+      container.classList.remove('hidden');
+    } else {
+      container.classList.add('hidden');
+    }
+  },
+
+  // ---- Inline Quantity Stepper (P7) ----
+  async updateQuantity(orderId, delta) {
+    if (this.selectedSessionId !== this.activeSessionId) {
+      showToast('📜 Past sessions are read-only');
+      return;
+    }
+    const order = this.orders.find(o => o.id === orderId);
+    if (!order) return;
+
+    const newQty = Math.max(1, Math.min(99, order.qty + delta));
+    if (newQty === order.qty) return;
+
+    order.qty = newQty;
+    const valEl = document.getElementById(`qty-val-${orderId}`);
+    if (valEl) valEl.textContent = newQty;
+    
+    // Optimistic re-render of local calculations
+    this.renderMyOrders();
+    this.renderAllOrders();
+    updateNavBadges();
+
+    // Fire API update directly (de-bounce is simple since it only fires on click)
+    try {
+      await API.updateOrder(orderId, { qty: newQty });
+    } catch (e) {
+      showToast('❌ Failed to update quantity');
+      await this.refresh();
+    }
+  },
+
+  // ---- URL Import Assistant (P1) ----
+  async handleUrlImport() {
+    const urlInput = document.getElementById('item-import-url');
+    const url = urlInput.value.trim();
+    if (!url) return;
+
+    const spinner = document.getElementById('preview-spinner');
+    const content = document.getElementById('preview-content');
+    const previewCard = document.getElementById('import-preview-card');
+    const detailsText = document.getElementById('preview-details');
+
+    previewCard.classList.remove('hidden');
+    spinner.classList.remove('hidden');
+    content.classList.add('hidden');
+
+    try {
+      const result = await API.scrapeUrl(url);
+      spinner.classList.add('hidden');
+      
+      if (result.success) {
+        if (result.productName) {
+          document.getElementById('item-name').value = result.productName;
+        }
+        if (result.estimatedPrice) {
+          document.getElementById('item-price').value = Math.round(result.estimatedPrice);
+        }
+        if (result.appId && this.apps.some(a => a.id === result.appId)) {
+          this.selectedAppId = result.appId;
+          this.renderAppPicker('app-picker', result.appId);
+        }
+        
+        document.getElementById('item-link').value = url;
+
+        detailsText.textContent = `${result.productName || 'Product'} — ${formatCurrency(result.estimatedPrice)}`;
+        content.classList.remove('hidden');
+        showToast('✨ Product details detected!');
+      } else {
+        throw new Error('Detection returned empty/invalid response');
+      }
+    } catch (err) {
+      console.error('Failed to parse URL:', err);
+      spinner.classList.add('hidden');
+      previewCard.classList.add('hidden');
+      showToast('⚠️ Could not auto-detect. Please fill details manually.', 3000);
     }
   },
 
@@ -471,7 +875,6 @@ const UserView = {
     } else {
       this.editSelectedAppId = appId;
     }
-    // Update UI
     const container = document.getElementById(containerId);
     container.querySelectorAll('.app-chip').forEach(chip => {
       chip.classList.toggle('selected', chip.dataset.appId === appId);
@@ -482,6 +885,12 @@ const UserView = {
   openAddModal() {
     this.selectedAppId = this.apps.length > 0 ? this.apps[0].id : null;
     this.renderAppPicker('app-picker', this.selectedAppId);
+    
+    // Clear URL import details
+    document.getElementById('item-import-url').value = '';
+    document.getElementById('import-preview-card').classList.add('hidden');
+    document.getElementById('preview-spinner').classList.add('hidden');
+
     document.getElementById('item-name').value = '';
     document.getElementById('item-link').value = '';
     document.getElementById('item-qty').value = '1';
@@ -611,9 +1020,19 @@ const UserView = {
 
   // ---- Refresh ----
   async refresh() {
-    await Promise.all([this.loadApps(), this.loadOrders()]);
+    const [ , , sessionRes ] = await Promise.all([
+      this.loadApps(),
+      this.loadOrders(),
+      API._fetch('/api/session').catch(() => ({ session: null }))
+    ]);
+    const activeSession = sessionRes?.session;
+    this.currentSession = activeSession;
+    
     this.renderAllOrders();
     this.renderMyOrders();
+    this.renderThresholdBars(activeSession);
+    await this.loadFavorites();
+    this.renderFavoritesList();
     updateNavBadges();
   },
 };
