@@ -6,29 +6,39 @@ GroupCart is a sleek, mobile-first web application designed to make group orderi
 
 ## 🌟 Key Features
 
-1. **Session Management & History**:
-   - Save order rounds into dedicated sessions.
-   - Admins can close/reset the active session, which archives it for future reference rather than deleting it.
-   - Users and admins can select any historical session from a dropdown selector to check past orders.
+1. **Interactive Session Status Pipeline**:
+   - A real-time visual progress tracker displays the current lifecycle state of an order: `People Adding Items` ➔ `Locked for Ordering` ➔ `Placed / Ordered` ➔ `Delivered` ➔ `Settled`.
+   - Transitions lock or unlock application functions (such as adding or modifying items) and are broadcasted to all connected clients in real-time.
 
-2. **Order Privacy**:
-   - To keep user purchases private, the **Home** ("All Orders") tab only shows the details of your own orders.
-   - For other group members, it only displays the aggregated active order total per delivery platform (helpful to check if you have hit free-delivery or discount thresholds).
-   - Only the Admin can view all order items on the backend Order Board to fulfill the group order.
+2. **Order Privacy & Admin Visibility**:
+   - Standard users see their own items in full detail on the **Home ("All Orders")** tab.
+   - Other users' active items are automatically grouped and rendered as anonymous summary cards (`[User]'s Order` showing only total count and estimated price), hiding individual product names and links.
+   - Organizers logged in as the Admin see everyone's order items in full detail on the Home tab to coordinate cart updates and manage items on the Order Board.
 
-3. **UPI Payment Integration**:
-   - Admins can save their UPI ID in the settings.
-   - When a bill is finalized, users see their exact calculated share in the **Pay** tab.
-   - Users get a **"Pay via UPI App"** deep link (to open Google Pay, PhonePe, Paytm, etc. directly on their phone) and a dynamically generated **UPI QR Code** pre-filled with the exact amount and transaction remarks.
+3. **UPI Payment & Admin Confirmation Flow**:
+   - Admins can configure their UPI ID in settings to enable direct, seamless payments.
+   - In the **Pay (💰)** tab, users see their exact final cost calculations.
+   - Users can tap a deep link to launch their favorite payment app (GPay, PhonePe, Paytm, BHIM, Slice, CRED) or scan a dynamically generated QR Code with pre-filled amount and remarks metadata.
+   - The user marks the bill as completed via **"I Have Paid"** (status changes to `Paid`).
+   - Admins confirm transactions in real-time under the **Confirm Payments** panel on the Admin Dashboard (status updates to `Confirmed` with a green badge).
 
-4. **Dynamic Settlement Engine**:
-   - Allows the admin to input the final delivery bill for each platform.
-   - Calculates proportional discounts, surcharges, and taxes automatically.
-   - Performs smart rounding to match the actual bill to the paisa.
-   - Click-to-copy summary generator for pasting results directly into chat groups.
+4. **Dynamic Split & Rounding Engines**:
+   - **Proportional Split**: Proportions app invoice adjustments (delivery fees, surcharges, discounts) across users based on their active items cost. Smart rounding dispatches rounding fractions (paisas) to the participant with the largest decimal remainder to balance the bill exactly.
+   - **Equal Split**: Distributes total platform bills equally among all participants, redistributing flat costs back to apps proportionally.
+   - **Custom Split**: Organizers can enter custom absolute rupee amounts to charge each participant.
+   - Includes informational discount badges (e.g. `saved ₹120.00!`) and warning alerts if active items are updated *after* entering bills.
 
-5. **Server-Sent Events (SSE)**:
-   - Real-time updates when users add items, update quantities, or admins change order statuses.
+5. **Favorites Quick-Add Drawer**:
+   - Users can star products on active item cards to add them to their personal favorites database list.
+   - Starred items appear in a toggleable sliding Favorites Drawer under the "Mine" tab, allowing users to re-add common products with a single tap.
+
+6. **PWA Mobile Share Target & Install Prompts**:
+   - Manifest metadata and Service Worker caching configurations enable native web app installation.
+   - The app detects local insecure hosting states and prompts users with a custom PWA Install Banner UI.
+   - Intercepts incoming system share payloads (via Android Share sheets or Apple iOS Shortcuts) to parse shared Swiggy/Blinkit/Zepto links and automatically pre-fill the cart item form.
+
+7. **Server-Sent Events (SSE)**:
+   - Replaces constant HTTP polling loops with a push event stream at `/api/events` to synchronize cart lists, progress bars, bills, and payment statuses across devices in real-time.
 
 ---
 
@@ -120,9 +130,14 @@ Here is the structured sequence of steps taken to design, build, and secure the 
 * Created distinct admin controls in the Admin panel to configure settings (UPI ID), reset sessions, confirm pending items, and input final bills.
 
 ### Step 5: Advanced Security & Order Privacy
-* Modified the core UI rendering engine in `public/js/user.js` to show detailed item information only for the logged-in user.
-* Enabled aggregated sum totals on platform headers for all other group members. This preserves individual item privacy while informing group members of current delivery thresholds.
-* Restricted the full Order Board item visibility to the Admin console dashboard.
+* Modified the core UI rendering engine in `public/js/user.js` to show detailed item information for the logged-in user, and aggregated anonymous summaries (total count and cost) for other users' active items.
+* Enabled full detailed order visibility for administrators on the Home tab while keeping non-own cards non-clickable and read-only.
+* Restricted the backend management Order Board to the Admin console dashboard.
+
+### Step 9: Theme-Integrated Dialogs & Custom Modals
+* Integrated the SweetAlert2 library and styled dialog overlays to match the app's premium dark purple theme.
+* Removed native browser alerts/confirms/prompts in favor of swal2 popups for deleting items, deleting apps, and adding out-of-stock note reasons.
+* Created a custom HTML/CSS modal prompting for an optional session name during session settlement, matching the reset session flow.
 
 ### Step 6: UPI App chooser & Dynamic QR Generation
 * Designed a custom payment deep-linking grid supporting multiple apps (Google Pay, PhonePe, Paytm, BHIM, Slice, CRED) and a fallback system deep link.

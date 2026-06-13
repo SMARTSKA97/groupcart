@@ -1,4 +1,4 @@
-const CACHE_NAME = 'groupcart-cache-v3';
+const CACHE_NAME = 'groupcart-cache-v4';
 const ASSETS = [
   '/',
   '/index.html',
@@ -57,7 +57,9 @@ self.addEventListener('activate', (e) => {
 });
 
 self.addEventListener('fetch', (e) => {
-  if (e.request.method !== 'GET' || !e.request.url.startsWith(self.location.origin)) {
+  if (e.request.method !== 'GET' || 
+      !e.request.url.startsWith(self.location.origin) ||
+      e.request.url.includes('/api/')) {
     return;
   }
   

@@ -160,7 +160,17 @@ const AdminView = {
 
   // Prompt for note (out-of-stock)
   async promptStatus(orderId, status) {
-    const note = prompt('Add a note (optional, e.g. "Try BigBasket instead"):') || '';
+    const result = await SwalCustom.fire({
+      title: 'Out of Stock Note',
+      text: 'Add a note (optional, e.g. "Try BigBasket instead"):',
+      input: 'text',
+      inputPlaceholder: 'Enter note here...',
+      showCancelButton: true,
+      confirmButtonText: 'Submit',
+      cancelButtonText: 'Cancel'
+    });
+    if (!result.isConfirmed) return;
+    const note = result.value ? result.value.trim() : '';
     try {
       await API.updateOrderStatus(orderId, status, note, Auth.getUserName());
       showToast(`Status updated to ${this.STATUS_CONFIG[status]?.label || status}`);
@@ -278,7 +288,8 @@ const AdminView = {
   },
 
   async updateStatus(newStatus) {
-    if (newStatus === 'settled' && !confirm('Are you sure you want to settle the session? This will close the group cart.')) {
+    if (newStatus === 'settled') {
+      this.openSettleModal();
       return;
     }
     try {
@@ -743,7 +754,15 @@ const AdminView = {
   },
 
   async removeApp(id, name) {
-    if (!confirm(`Remove ${name}? Existing orders for this app won't be deleted.`)) return;
+    const result = await SwalCustom.fire({
+      title: 'Remove Platform?',
+      text: `Are you sure you want to remove ${name}? Existing orders for this app won't be deleted.`,
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonText: 'Remove',
+      cancelButtonText: 'Cancel'
+    });
+    if (!result.isConfirmed) return;
     try {
       await API.deleteApp(id);
       showToast(`🗑️ ${name} removed`);
@@ -790,6 +809,37 @@ const AdminView = {
       }
     } catch (err) {
       showToast('❌ Failed to reset session');
+    }
+  },
+
+  // ---- Settle Session ----
+  openSettleModal() {
+    console.log('Open settle modal. Selected:', UserView.selectedSessionId, 'Active:', UserView.activeSessionId);
+    if (UserView.selectedSessionId !== UserView.activeSessionId) {
+      showToast('⚠️ Cannot settle a historical session.');
+      return;
+    }
+    document.getElementById('settle-session-name').value = '';
+    document.getElementById('modal-settle-session').classList.remove('hidden');
+  },
+
+  closeSettleModal() {
+    document.getElementById('modal-settle-session').classList.add('hidden');
+  },
+
+  async submitSettleSession(e) {
+    if (e) e.preventDefault();
+    this.closeSettleModal();
+
+    const name = document.getElementById('settle-session-name').value.trim();
+
+    try {
+      await API.updateSessionStatus('settled', Auth.getUserName(), name);
+      showToast(`✅ Session status updated to SETTLED`);
+      await UserView.refresh();
+      this.renderAll();
+    } catch (err) {
+      showToast('❌ Failed to settle session');
     }
   },
 

@@ -11,7 +11,6 @@ RUN npm ci --production
 # Copy application files
 COPY server.js ./
 COPY public/ ./public/
-COPY data/ ./data/
 
 # Data volume for persistence
 VOLUME ["/app/data"]

@@ -411,6 +411,7 @@
   // ---- Reset Session (Admin) ----
   document.getElementById('reset-session-btn').addEventListener('click', () => AdminView.openResetModal());
   document.getElementById('reset-session-form').addEventListener('submit', (e) => AdminView.submitResetSession(e));
+  document.getElementById('settle-session-form').addEventListener('submit', (e) => AdminView.submitSettleSession(e));
 
   // ---- SSE Handlers ----
   function setupSSEHandlers() {

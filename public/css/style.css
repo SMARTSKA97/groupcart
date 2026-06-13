@@ -1981,3 +1981,48 @@ a:hover { text-decoration: underline; }
   background: var(--accent-primary);
   color: white;
 }
+
+/* ===== Other Users' Order Summary ===== */
+.other-user-summary {
+  background: rgba(255, 255, 255, 0.015) !important;
+  border: 1px dashed rgba(255, 255, 255, 0.1) !important;
+  cursor: default !important;
+  transform: none !important;
+  box-shadow: none !important;
+}
+.other-user-summary:hover {
+  background: rgba(255, 255, 255, 0.015) !important;
+}
+.other-user-summary:active {
+  transform: none !important;
+}
+
+/* ===== SweetAlert2 Theme Overrides ===== */
+.swal-theme-popup {
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius-lg) !important;
+}
+.swal-theme-title {
+  font-weight: 800 !important;
+  font-family: var(--font) !important;
+  font-size: 1.35rem !important;
+  color: var(--text-primary) !important;
+}
+.swal-theme-html {
+  font-family: var(--font) !important;
+  color: var(--text-secondary) !important;
+  font-size: 0.9rem !important;
+}
+.swal-theme-input {
+  background: var(--bg-input) !important;
+  border: 1.5px solid var(--border) !important;
+  border-radius: var(--radius-md) !important;
+  color: var(--text-primary) !important;
+  font-family: var(--font) !important;
+}
+.swal-theme-input:focus {
+  border-color: var(--accent-primary) !important;
+  box-shadow: 0 0 0 3px rgba(108, 99, 255, 0.15) !important;
+}
+
+

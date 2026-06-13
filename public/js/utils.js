@@ -111,3 +111,26 @@ function generateOrderSummaryText(orders, apps) {
   text += '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━';
   return text;
 }
+
+// ===== SweetAlert2 Global Custom Theme Helper =====
+const SwalCustom = {
+  fire(options = {}) {
+    return Swal.fire({
+      background: 'var(--bg-card, #16213e)',
+      color: 'var(--text-primary, #e8e8f0)',
+      confirmButtonColor: 'var(--accent-primary, #6c63ff)',
+      cancelButtonColor: 'var(--bg-input, #0e1628)',
+      // Apply theme custom classes
+      customClass: {
+        popup: 'swal-theme-popup',
+        title: 'swal-theme-title',
+        htmlContainer: 'swal-theme-html',
+        input: 'swal-theme-input',
+        confirmButton: 'btn btn-primary',
+        cancelButton: 'btn'
+      },
+      ...options
+    });
+  }
+};
+

@@ -118,10 +118,10 @@ const API = {
   },
 
   // Session status
-  updateSessionStatus(status, adminName) {
+  updateSessionStatus(status, adminName, name) {
     return this._fetch('/api/session/status', {
       method: 'PUT',
-      body: JSON.stringify({ status, adminName }),
+      body: JSON.stringify({ status, adminName, name }),
     });
   },
 

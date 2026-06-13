@@ -20,7 +20,7 @@ const userSchema = new mongoose.Schema({
   name: { type: String, required: true },
   isAdmin: { type: Boolean, default: false },
   createdAt: { type: Date, default: Date.now }
-});
+}, { id: false });
 const User = mongoose.model('User', userSchema);
 
 const appSchema = new mongoose.Schema({
@@ -28,7 +28,7 @@ const appSchema = new mongoose.Schema({
   name: { type: String, required: true },
   color: { type: String, default: '#888888' },
   icon: { type: String, default: '📦' }
-});
+}, { id: false });
 const App = mongoose.model('App', appSchema);
 
 const orderSchema = new mongoose.Schema({
@@ -50,7 +50,7 @@ const orderSchema = new mongoose.Schema({
   adminModifiedBy: { type: String },
   adminModifiedAt: { type: Date },
   isFavorite: { type: Boolean, default: false }
-});
+}, { id: false });
 const Order = mongoose.model('Order', orderSchema);
 
 const billSchema = new mongoose.Schema({
@@ -59,7 +59,7 @@ const billSchema = new mongoose.Schema({
   appId: { type: String, required: true },
   actualAmount: { type: Number, required: true },
   settledAt: { type: Date, default: Date.now }
-});
+}, { id: false });
 const Bill = mongoose.model('Bill', billSchema);
 
 const sessionSchema = new mongoose.Schema({
@@ -72,7 +72,7 @@ const sessionSchema = new mongoose.Schema({
   splitMode: { type: String, default: 'proportional', enum: ['proportional', 'equal', 'custom'] },
   customSplits: { type: Map, of: Number, default: {} },
   freeDeliveryThresholds: { type: Map, of: Number, default: {} }
-});
+}, { id: false });
 const Session = mongoose.model('Session', sessionSchema);
 
 const settingsSchema = new mongoose.Schema({
@@ -88,7 +88,7 @@ const favoriteSchema = new mongoose.Schema({
   estimatedPrice: { type: Number, default: 0 },
   link: { type: String, default: '' },
   createdAt: { type: Date, default: Date.now }
-});
+}, { id: false });
 favoriteSchema.index({ userId: 1, appId: 1, productName: 1 }, { unique: true });
 const Favorite = mongoose.model('Favorite', favoriteSchema);
 
@@ -102,11 +102,11 @@ const paymentSchema = new mongoose.Schema({
   confirmedByAdmin: { type: Boolean, default: false },
   confirmedAt: { type: Date },
   confirmedBy: { type: String }
-});
+}, { id: false });
 const Payment = mongoose.model('Payment', paymentSchema);
 
 async function getActiveSession() {
-  let session = await Session.findOne({ active: true });
+  let session = await Session.findOne({ active: true }).sort({ createdAt: -1 });
   if (!session) {
     session = await Session.create({ id: generateId(), name: 'Current Session', active: true, createdAt: new Date() });
   } else if (!session.id) {
@@ -741,7 +741,7 @@ app.post('/api/session/reset', async (req, res) => {
     const { name } = req.body;
     
     // Deactivate current active session
-    const currentActive = await Session.findOne({ active: true });
+    const currentActive = await Session.findOne({ active: true }).sort({ createdAt: -1 });
     if (currentActive) {
       currentActive.active = false;
       currentActive.settledAt = new Date();
@@ -943,7 +943,7 @@ app.post('/api/scrape-url', async (req, res) => {
 // --- Session status flow ---
 app.put('/api/session/status', async (req, res) => {
   try {
-    const { status, adminName } = req.body;
+    const { status, adminName, name } = req.body;
     const validStatuses = ['adding', 'locked', 'ordered', 'delivered', 'settled'];
     if (!validStatuses.includes(status)) {
       return res.status(400).json({ error: 'Invalid status' });
@@ -954,6 +954,12 @@ app.put('/api/session/status', async (req, res) => {
     if (status === 'settled') {
       session.active = false;
       session.settledAt = new Date();
+      if (name && name.trim()) {
+        session.name = name.trim();
+      } else {
+        const d = new Date();
+        session.name = `Session ${d.toLocaleDateString('en-IN')} ${d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}`;
+      }
     }
     await session.save();
     broadcastSSE('session-status-changed', { status, sessionId: session.id });

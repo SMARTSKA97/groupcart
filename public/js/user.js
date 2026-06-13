@@ -153,34 +153,99 @@ const UserView = {
         return aEx - bEx;
       });
 
+      const isAdmin = Auth.isAdmin();
+      const currentUserId = Auth.getUserId();
       let hasRenderedAny = false;
-      for (const order of sortedOrders) {
-        const isOwn = order.userId === Auth.getUserId();
-        if (!isOwn) continue; // Privacy: only show own orders
 
-        hasRenderedAny = true;
-        const isExcluded = this._isExcluded(order);
+      if (isAdmin) {
+        // Admin: render every order card in detail
+        for (const order of sortedOrders) {
+          hasRenderedAny = true;
+          const isOwn = order.userId === currentUserId;
+          const isExcluded = this._isExcluded(order);
 
-        html += `<div class="order-card own-order ${isExcluded ? 'order-excluded' : ''}" data-order-id="${order.id}" ${!isExcluded ? 'onclick="UserView.openEditModal(\'' + order.id + '\')"' : ''}>
-          <div class="order-card-body">
-            <div class="order-product ${isExcluded ? 'text-strikethrough' : ''}">${escapeHtml(order.productName)}</div>
-            <div class="order-meta">
-              <span class="order-user-tag">${escapeHtml(order.userName)}</span>
-              <span>×${order.qty}</span>
-              ${this._statusBadge(order)}
+          html += `<div class="order-card ${isOwn ? 'own-order' : 'other-order'} ${isExcluded ? 'order-excluded' : ''}" data-order-id="${order.id}" ${isOwn && !isExcluded ? 'onclick="UserView.openEditModal(\'' + order.id + '\')"' : 'style="cursor: default;"'}>
+            <div class="order-card-body">
+              <div class="order-product ${isExcluded ? 'text-strikethrough' : ''}">${escapeHtml(order.productName)}</div>
+              <div class="order-meta">
+                <span class="order-user-tag">${escapeHtml(order.userName)}</span>
+                <span>×${order.qty}</span>
+                ${this._statusBadge(order)}
+              </div>
+              ${order.status === 'out-of-stock' && order.statusNote ? `<div class="order-status-note">📝 ${escapeHtml(order.statusNote)}</div>` : ''}
+              ${order.link ? `<a class="order-link" href="${escapeHtml(order.link)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">🔗 Open link</a>` : ''}
             </div>
-            ${order.status === 'out-of-stock' && order.statusNote ? `<div class="order-status-note">📝 ${escapeHtml(order.statusNote)}</div>` : ''}
-            ${order.link ? `<a class="order-link" href="${escapeHtml(order.link)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">🔗 Open link</a>` : ''}
-          </div>
-          <div>
-            <div class="order-price ${isExcluded ? 'text-strikethrough text-muted-price' : ''}">${formatCurrency(order.estimatedPrice * order.qty)}</div>
-            ${order.qty > 1 ? `<div class="order-qty">${formatCurrency(order.estimatedPrice)} each</div>` : ''}
-          </div>
-        </div>`;
-      }
+            <div>
+              <div class="order-price ${isExcluded ? 'text-strikethrough text-muted-price' : ''}">${formatCurrency(order.estimatedPrice * order.qty)}</div>
+              ${order.qty > 1 ? `<div class="order-qty">${formatCurrency(order.estimatedPrice)} each</div>` : ''}
+            </div>
+          </div>`;
+        }
+      } else {
+        // Non-admin: render own orders in detail, and other users' active orders summarized
+        // Render own orders first (sorted active first, then excluded)
+        const ownOrders = sortedOrders.filter(o => o.userId === currentUserId);
+        for (const order of ownOrders) {
+          hasRenderedAny = true;
+          const isExcluded = this._isExcluded(order);
 
-      if (!hasRenderedAny) {
-        html += `<div style="padding: 0.75rem 1rem; color: var(--text-muted); font-size: 0.85rem; font-style: italic;">No items added by you here</div>`;
+          html += `<div class="order-card own-order ${isExcluded ? 'order-excluded' : ''}" data-order-id="${order.id}" ${!isExcluded ? 'onclick="UserView.openEditModal(\'' + order.id + '\')"' : ''}>
+            <div class="order-card-body">
+              <div class="order-product ${isExcluded ? 'text-strikethrough' : ''}">${escapeHtml(order.productName)}</div>
+              <div class="order-meta">
+                <span class="order-user-tag">${escapeHtml(order.userName)}</span>
+                <span>×${order.qty}</span>
+                ${this._statusBadge(order)}
+              </div>
+              ${order.status === 'out-of-stock' && order.statusNote ? `<div class="order-status-note">📝 ${escapeHtml(order.statusNote)}</div>` : ''}
+              ${order.link ? `<a class="order-link" href="${escapeHtml(order.link)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">🔗 Open link</a>` : ''}
+            </div>
+            <div>
+              <div class="order-price ${isExcluded ? 'text-strikethrough text-muted-price' : ''}">${formatCurrency(order.estimatedPrice * order.qty)}</div>
+              ${order.qty > 1 ? `<div class="order-qty">${formatCurrency(order.estimatedPrice)} each</div>` : ''}
+            </div>
+          </div>`;
+        }
+
+        // Render message if no own orders under this platform/app
+        if (ownOrders.length === 0) {
+          html += `<div style="padding: 0.75rem 1rem; color: var(--text-muted); font-size: 0.85rem; font-style: italic;">No items added by you here</div>`;
+        }
+
+        // Find all active orders for other users under this appId
+        const otherActiveOrders = sortedOrders.filter(o => o.userId !== currentUserId && !this._isExcluded(o));
+
+        // Group them by userId / userName
+        const otherUserGroups = {};
+        for (const order of otherActiveOrders) {
+          if (!otherUserGroups[order.userId]) {
+            otherUserGroups[order.userId] = {
+              userName: order.userName,
+              count: 0,
+              total: 0
+            };
+          }
+          otherUserGroups[order.userId].count += order.qty;
+          otherUserGroups[order.userId].total += order.estimatedPrice * order.qty;
+        }
+
+        // Render a summary card for each other user
+        for (const otherUserId in otherUserGroups) {
+          hasRenderedAny = true;
+          const group = otherUserGroups[otherUserId];
+          html += `<div class="order-card other-user-summary" style="cursor: default;">
+            <div class="order-card-body">
+              <div class="order-product">${escapeHtml(group.userName)}'s Order</div>
+              <div class="order-meta">
+                <span class="order-user-tag" style="background: rgba(255, 255, 255, 0.05); color: var(--text-secondary);">${escapeHtml(group.userName)}</span>
+                <span>${group.count} ${group.count === 1 ? 'item' : 'items'}</span>
+              </div>
+            </div>
+            <div>
+              <div class="order-price" style="color: var(--text-secondary);">${formatCurrency(group.total)}</div>
+            </div>
+          </div>`;
+        }
       }
       html += `</div>`;
     }
@@ -996,7 +1061,15 @@ const UserView = {
 
   async deleteItem() {
     const id = document.getElementById('edit-item-id').value;
-    if (!confirm('Delete this item?')) return;
+    const result = await SwalCustom.fire({
+      title: 'Delete Item?',
+      text: 'Are you sure you want to delete this item?',
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonText: 'Delete',
+      cancelButtonText: 'Cancel'
+    });
+    if (!result.isConfirmed) return;
 
     try {
       await API.deleteOrder(id);
