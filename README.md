@@ -61,26 +61,37 @@ The application is fully containerized and configured for local hosting and cros
 
 ### Option A: Run Pre-built Image from GHCR (Recommended)
 
-The application is automatically built and published to the **GitHub Container Registry (GHCR)** on every push to the `main` branch. You can run the application using the pre-built image without needing to compile it locally.
+The application is automatically built and published to the **GitHub Container Registry (GHCR)** on every push to the `main` branch. 
 
-1. Ensure you have configured your local `.env` file (copied from `.env.example`).
-2. Start the services using the GHCR docker-compose configuration:
+**Without cloning the repository (One-Liner):**
+On Windows Powershell or Linux, you can download the configuration and start the application instantly with:
+```bash
+curl.exe -sSL https://raw.githubusercontent.com/SMARTSKA97/groupcart/main/docker-compose.yml -o docker-compose.yml; docker compose up -d
+```
+
+**With cloning the repository:**
+1. Clone this repository and navigate to the project directory:
    ```bash
-   docker compose -f docker-compose.ghcr.yml up -d
+   git clone https://github.com/SMARTSKA97/groupcart.git
+   cd groupcart
+   ```
+2. Start the services:
+   ```bash
+   docker compose up -d
    ```
 
-### Option B: Build and Run Locally
+### Option B: Local Development / Local Build
 
-If you are developing or want to compile the image from source code:
+If you are a developer and want to compile the image from source code locally:
 
 1. Clone this repository and navigate to the project directory:
    ```bash
+   git clone https://github.com/SMARTSKA97/groupcart.git
    cd groupcart
    ```
-
-2. Build and run the containers:
+2. Build and run the containers using the development configuration:
    ```bash
-   docker compose up -d --build
+   docker compose -f docker-compose.dev.yml up -d --build
    ```
 
 3. Access the application:
