@@ -59,16 +59,28 @@ The application is fully containerized and configured for local hosting and cros
 ### Prerequisites
 * [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed and running.
 
-### Run with Docker Compose
+### Option A: Run Pre-built Image from GHCR (Recommended)
+
+The application is automatically built and published to the **GitHub Container Registry (GHCR)** on every push to the `main` branch. You can run the application using the pre-built image without needing to compile it locally.
+
+1. Ensure you have configured your local `.env` file (copied from `.env.example`).
+2. Start the services using the GHCR docker-compose configuration:
+   ```bash
+   docker compose -f docker-compose.ghcr.yml up -d
+   ```
+
+### Option B: Build and Run Locally
+
+If you are developing or want to compile the image from source code:
 
 1. Clone this repository and navigate to the project directory:
    ```bash
-   cd e-shop
+   cd groupcart
    ```
 
 2. Build and run the containers:
    ```bash
-   docker-compose up -d --build
+   docker compose up -d --build
    ```
 
 3. Access the application:
@@ -154,3 +166,8 @@ Here is the structured sequence of steps taken to design, build, and secure the 
   1. Captures URLs and Text from Zomato/Swiggy's share sheets on iOS.
   2. Forwards them as a query string (`?text=...`) to Safari.
   3. Triggers the same local parsing logic on the PWA frontend.
+
+### Step 10: Automated CI/CD & GitHub Container Registry (GHCR)
+* Set up a GitHub Actions workflow in `.github/workflows/docker-publish.yml` triggered on push/merge to the `main` branch.
+* Automates extraction of the application version from `package.json` (e.g. `v2.0.0`) and builds the Docker image.
+* Publishes the built image to GitHub Container Registry (GHCR) at `ghcr.io/smartska97/groupcart` under tags `v<version>` (e.g., `v2.0.0`) and `latest` for easy pull-and-run deployment.

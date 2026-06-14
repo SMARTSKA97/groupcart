@@ -185,6 +185,8 @@ V2 introduces an end-to-end payment status system:
 
 ---
 
-## 📦 11. Docker Build Enhancements
+## 📦 11. Docker Build & CI/CD Enhancements
 * **Dockerfile**: Deleted `COPY data/ ./data/` to keep container builds minimal, as legacy JSON fallback templates are no longer required.
 * **docker-compose.yml**: Configured named volume `mongodb_data` to ensure DB files persist across rebuilds, and updated dependencies order to map startup connections.
+* **Automated GHCR Pipeline (GitHub Actions)**: Integrated GitHub Actions workflow `.github/workflows/docker-publish.yml` to build and push the Docker image to GitHub Container Registry (`ghcr.io/smartska97/groupcart`) automatically on push/merge to the `main` branch.
+* **Pre-built Deployment Config**: Provided `docker-compose.ghcr.yml` to allow fast startup of the entire system using the pre-built, production-ready GHCR container images instead of needing to build the Docker image locally.
