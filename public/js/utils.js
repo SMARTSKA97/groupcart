@@ -134,3 +134,95 @@ const SwalCustom = {
   }
 };
 
+function copyToClipboard(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    return navigator.clipboard.writeText(text);
+  }
+  return new Promise((resolve, reject) => {
+    try {
+      const textArea = document.createElement("textarea");
+      textArea.value = text;
+      textArea.style.top = "0";
+      textArea.style.left = "0";
+      textArea.style.position = "fixed";
+      textArea.style.opacity = "0";
+      document.body.appendChild(textArea);
+      textArea.focus();
+      textArea.select();
+      const successful = document.execCommand('copy');
+      document.body.removeChild(textArea);
+      if (successful) {
+        resolve();
+      } else {
+        reject(new Error("Fallback copy command was unsuccessful"));
+      }
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
+const Tutorial = {
+  currentSlide: 0,
+  slides: [],
+  onFinish: null,
+
+  show(slides, onFinish) {
+    this.slides = slides;
+    this.currentSlide = 0;
+    this.onFinish = onFinish;
+    
+    const modal = document.getElementById('modal-tutorial');
+    if (modal) modal.classList.remove('hidden');
+    this.renderSlide();
+    
+    const prev = document.getElementById('btn-tutorial-prev');
+    const next = document.getElementById('btn-tutorial-next');
+    if (prev) prev.onclick = () => this.prev();
+    if (next) next.onclick = () => this.next();
+  },
+
+  renderSlide() {
+    const slide = this.slides[this.currentSlide];
+    const content = document.getElementById('tutorial-content');
+    if (!content) return;
+    
+    content.innerHTML = `
+      <div class="tutorial-slide" style="text-align: center; padding: 1.5rem 1rem;">
+        <div style="font-size: 3.5rem; margin-bottom: 1rem;">${slide.icon}</div>
+        <h3 style="margin-bottom: 0.75rem; color: var(--accent-primary); font-size: 1.3rem; font-weight: 700;">${slide.title}</h3>
+        <p style="font-size: 0.92rem; line-height: 1.55; color: var(--text-secondary); max-width: 340px; margin: 0 auto;">${slide.text}</p>
+      </div>
+    `;
+    
+    const prevBtn = document.getElementById('btn-tutorial-prev');
+    const nextBtn = document.getElementById('btn-tutorial-next');
+    
+    if (prevBtn) {
+      prevBtn.style.visibility = this.currentSlide === 0 ? 'hidden' : 'visible';
+    }
+    
+    if (nextBtn) {
+      nextBtn.textContent = this.currentSlide === this.slides.length - 1 ? 'Got It! 🎉' : 'Next →';
+    }
+  },
+
+  next() {
+    if (this.currentSlide < this.slides.length - 1) {
+      this.currentSlide++;
+      this.renderSlide();
+    } else {
+      const modal = document.getElementById('modal-tutorial');
+      if (modal) modal.classList.add('hidden');
+      if (this.onFinish) this.onFinish();
+    }
+  },
+
+  prev() {
+    if (this.currentSlide > 0) {
+      this.currentSlide--;
+      this.renderSlide();
+    }
+  }
+};
+

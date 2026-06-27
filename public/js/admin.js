@@ -28,6 +28,97 @@ const AdminView = {
     if (btnCopyPayment) {
       btnCopyPayment.addEventListener('click', () => this.copyPaymentSummary());
     }
+
+    // Save Rounding Mode
+    const btnSaveRounding = document.getElementById('btn-save-rounding-mode');
+    if (btnSaveRounding) {
+      btnSaveRounding.addEventListener('click', async () => {
+        const rounding = document.querySelector('input[name="rounding-mode"]:checked')?.value || 'automatic';
+        try {
+          await API.setSplitMode(undefined, undefined, rounding);
+          showToast(`✅ Rounding mode set to: ${rounding.toUpperCase()}`);
+          await UserView.refresh();
+          this.renderAll();
+        } catch (err) {
+          showToast('❌ Failed to save rounding mode');
+        }
+      });
+    }
+
+    // Save Allowed Apps
+    const btnSaveSessionApps = document.getElementById('btn-save-session-apps');
+    if (btnSaveSessionApps) {
+      btnSaveSessionApps.addEventListener('click', async () => {
+        const checkboxes = document.querySelectorAll('.admin-session-app-checkbox:checked');
+        const allowedAppIds = Array.from(checkboxes).map(cb => cb.value);
+        try {
+          await API.setAllowedApps(allowedAppIds);
+          showToast('✅ Allowed apps saved!');
+          await UserView.refresh();
+          this.renderAll();
+        } catch (err) {
+          showToast('❌ Failed to save allowed apps');
+        }
+      });
+    }
+
+    // OOS Move Scraper Detector
+    const btnOOSDetect = document.getElementById('btn-oos-detect');
+    if (btnOOSDetect) {
+      btnOOSDetect.addEventListener('click', async () => {
+        const urlInput = document.getElementById('oos-move-link');
+        const url = urlInput.value.trim();
+        if (!url) return;
+        
+        btnOOSDetect.disabled = true;
+        btnOOSDetect.textContent = '...';
+        try {
+          const res = await API.scrapeUrl(url);
+          if (res.success) {
+            if (res.productName) document.getElementById('oos-move-name').value = res.productName;
+            if (res.estimatedPrice) document.getElementById('oos-move-price').value = Math.round(res.estimatedPrice);
+            if (res.appId) this.selectOOSApp(res.appId);
+            showToast('✨ Details detected!');
+          } else {
+            showToast('❌ Not detected');
+          }
+        } catch (err) {
+          showToast('❌ Detection failed');
+        } finally {
+          btnOOSDetect.disabled = false;
+          btnOOSDetect.textContent = 'Detect';
+        }
+      });
+    }
+
+    // Submit OOS Move Form
+    const oosForm = document.getElementById('oos-move-form');
+    if (oosForm) {
+      oosForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const orderId = document.getElementById('oos-move-order-id').value;
+        const targetAppId = this.oosTargetAppId;
+        const link = document.getElementById('oos-move-link').value.trim();
+        const productName = document.getElementById('oos-move-name').value.trim();
+        const price = parseFloat(document.getElementById('oos-move-price').value) || 0;
+
+        if (!targetAppId) {
+          showToast('⚠️ Please select a target app');
+          return;
+        }
+
+        try {
+          await API.updateOrder(orderId, { appId: targetAppId, link, productName, estimatedPrice: price });
+          await API.updateOrderStatus(orderId, 'pending', 'Moved target platform', Auth.getUserName());
+          showToast('✅ Item moved successfully!');
+          this.closeOOSMoveModal();
+          await UserView.refresh();
+          this.renderAll();
+        } catch (err) {
+          showToast('❌ Failed to move item');
+        }
+      });
+    }
   },
 
   // ---- Render Order Board ----
@@ -56,12 +147,17 @@ const AdminView = {
       const total = activeOrders.reduce((s, o) => s + o.estimatedPrice * o.qty, 0);
       const pendingCount = appOrders.filter(o => o.status === 'pending').length;
 
+      // Extract all product links for copying
+      const linksText = appOrders.filter(o => o.link).map(o => o.link).join('\n');
+
       html += `<div class="admin-app-section">
         <div class="admin-app-header">
           <span class="admin-app-dot" style="background: ${app.color}"></span>
           <span>${app.icon} ${escapeHtml(app.name)}</span>
           <span style="color: var(--text-muted); font-weight: 400; font-size: 0.85rem">(${appOrders.length} items)</span>
-        </div>`;
+        </div>
+        ${linksText ? `<button class="btn btn-sm btn-secondary" onclick="copyToClipboard('${escapeHtml(linksText)}').then(() => showToast('✅ Copied all links!'))" style="margin-bottom: 0.75rem; width: 100%; font-size: 0.75rem; padding: 4px;">🔗 Copy All Product Links</button>` : ''}
+      `;
 
       // Bulk confirm button
       if (pendingCount > 0 && !isReadOnly) {
@@ -99,6 +195,9 @@ const AdminView = {
           ${order.link ? `<a class="admin-order-link" href="${escapeHtml(order.link)}" target="_blank" rel="noopener">🔗</a>` : ''}
           <div class="admin-status-controls">
             ${this._renderStatusChips(order)}
+            ${(order.status === 'out-of-stock' && !isReadOnly) ? `
+              <button class="status-chip" onclick="AdminView.openOOSMoveModal('${order.id}', '${escapeHtml(order.productName)}')" style="background: var(--accent-secondary); color: white; border: none; font-size: 0.72rem; padding: 2px 6px; cursor: pointer; border-radius: 4px; display: inline-flex; align-items: center; gap: 2px;">🔄 Move</button>
+            ` : ''}
           </div>
         </div>`;
       }
@@ -348,35 +447,59 @@ const AdminView = {
     for (const user of settlement.users) {
       if (user.total <= 0) continue;
       activeOwer = true;
-      
-      const payment = payments.find(p => p.userId === user.userId);
-      let statusText = '<span class="status-badge unpaid">Unpaid</span>';
-      let actionBtn = '';
 
-      if (payment) {
-        if (payment.confirmedByAdmin) {
-          statusText = `<span class="status-badge confirmed">Confirmed</span>`;
-          if (!isReadOnly) {
-            actionBtn = `<button class="btn btn-sm btn-text" onclick="AdminView.setPaymentConfirm('${payment.id}', false)" style="color: var(--danger); margin-left: 0.5rem; padding: 0.15rem 0.4rem;">Unconfirm</button>`;
-          }
-        } else {
-          statusText = `<span class="status-badge paid">Paid</span>`;
-          if (!isReadOnly) {
-            actionBtn = `<button class="btn btn-sm btn-primary" onclick="AdminView.setPaymentConfirm('${payment.id}', true)" style="padding: 0.2rem 0.5rem; font-size: 0.75rem;">Confirm</button>`;
-          }
+      const userPayments = payments.filter(p => p.userId === user.userId);
+      let paymentsListHtml = '';
+      const totalPaidOrPending = userPayments.reduce((sum, p) => sum + p.amount, 0);
+
+      if (userPayments.length > 0) {
+        paymentsListHtml = `<div style="margin-top: 0.4rem; padding-left: 0.75rem; border-left: 2px solid var(--border); display: flex; flex-direction: column; gap: 0.35rem;">`;
+        for (const p of userPayments) {
+          const pStatus = p.confirmedByAdmin ? 
+            `<span class="status-badge confirmed">Confirmed</span>` : 
+            `<span class="status-badge paid">Paid</span>`;
+          const pAction = p.confirmedByAdmin ? 
+            `<button class="btn btn-sm btn-text" onclick="AdminView.setPaymentConfirm('${p.id}', false)" style="color: var(--danger); padding: 2px 6px; font-size: 0.7rem; margin-left: 0.5rem;">Unconfirm</button>` : 
+            `<button class="btn btn-sm btn-primary" onclick="AdminView.setPaymentConfirm('${p.id}', true)" style="padding: 2px 6px; font-size: 0.7rem; margin-left: 0.5rem;">Confirm</button>`;
+
+          paymentsListHtml += `
+            <div style="display: flex; align-items: center; justify-content: space-between; font-size: 0.78rem;">
+              <span>Paid: <strong>${formatCurrency(p.amount)}</strong></span>
+              <div style="display: flex; align-items: center;">
+                ${pStatus}
+                ${!isReadOnly ? pAction : ''}
+              </div>
+            </div>
+          `;
         }
+
+        // Allow manual confirmation of any remaining amount
+        const remaining = user.total - totalPaidOrPending;
+        if (remaining > 0.5 && !isReadOnly) {
+          paymentsListHtml += `
+            <div style="display: flex; align-items: center; justify-content: space-between; font-size: 0.78rem; margin-top: 0.25rem;">
+              <span class="text-muted">Remaining: <strong>${formatCurrency(remaining)}</strong></span>
+              <button class="btn btn-sm btn-secondary" onclick="AdminView.manualConfirm('${user.userId}', '${escapeHtml(user.userName)}', ${remaining})" style="padding: 2px 6px; font-size: 0.7rem;">Confirm Rest</button>
+            </div>
+          `;
+        }
+        paymentsListHtml += `</div>`;
+      } else {
+        paymentsListHtml = `
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 0.4rem;">
+            <span class="status-badge unpaid">Unpaid</span>
+            ${!isReadOnly ? `<button class="btn btn-sm btn-secondary" onclick="AdminView.manualConfirm('${user.userId}', '${escapeHtml(user.userName)}', ${user.total})" style="padding: 2px 6px; font-size: 0.7rem;">Manual Confirm</button>` : ''}
+          </div>
+        `;
       }
 
       html += `
-        <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(255, 255, 255, 0.01); border: 1px solid var(--border); padding: 0.5rem 0.75rem; border-radius: var(--radius-sm);">
-          <div>
-            <div style="font-weight: 600; font-size: 0.85rem;">👤 ${escapeHtml(user.userName)}</div>
-            <div style="font-size: 0.75rem; color: var(--text-secondary); margin-top: 0.15rem;">Owes ${formatCurrency(user.total)}</div>
+        <div style="background: rgba(255, 255, 255, 0.01); border: 1px solid var(--border); padding: 0.55rem 0.75rem; border-radius: var(--radius-sm);">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <span style="font-weight: 600; font-size: 0.85rem;">👤 ${escapeHtml(user.userName)}</span>
+            <span style="font-size: 0.8rem; font-weight: 500;">Total Owed: <strong style="color: var(--accent-secondary);">${formatCurrency(user.total)}</strong></span>
           </div>
-          <div style="display: flex; align-items: center; gap: 0.5rem;">
-            ${statusText}
-            ${actionBtn}
-          </div>
+          ${paymentsListHtml}
         </div>
       `;
     }
@@ -490,6 +613,10 @@ const AdminView = {
     } else {
       customBox.classList.add('hidden');
     }
+
+    const rounding = session.roundingMode || 'automatic';
+    const roundingRadio = document.querySelector(`input[name="rounding-mode"][value="${rounding}"]`);
+    if (roundingRadio) roundingRadio.checked = true;
   },
 
   // ---- Threshold targets (P6) ----
@@ -845,15 +972,162 @@ const AdminView = {
 
   // ---- Render All Admin Sections ----
   renderAll() {
+    // Trigger admin onboarding walkthrough if not shown yet
+    if (!localStorage.getItem('groupcart_tutorial_admin_shown')) {
+      localStorage.setItem('groupcart_tutorial_admin_shown', 'true');
+      setTimeout(() => {
+        this.showAdminOnboardingTutorial();
+      }, 500);
+    }
+
     this.renderOrderBoard();
     this.renderBillsForm();
     this.renderManageApps();
     this.renderSessionStatusControls();
     this.renderPaymentAdmin();
     this.renderDashboard();
+    this.renderSessionAppsCheckboxes();
+    this.renderManageUsers();
+    
     if (UserView.currentSession) {
       this.syncSplitModeUI(UserView.currentSession);
       this.renderThresholdConfigFields(UserView.currentSession);
     }
+  },
+
+  renderSessionAppsCheckboxes() {
+    const container = document.getElementById('admin-session-apps-checkboxes');
+    if (!container) return;
+    
+    const session = UserView.currentSession;
+    const allowedAppIds = session?.allowedAppIds || [];
+    
+    container.innerHTML = UserView.apps.map(app => {
+      const isAllowed = allowedAppIds.length === 0 || allowedAppIds.includes(app.id);
+      return `
+        <label class="checkbox-label" style="margin-right: 0.75rem;">
+          <input type="checkbox" class="admin-session-app-checkbox" value="${app.id}" ${isAllowed ? 'checked' : ''} />
+          <span class="checkmark"></span>
+          ${app.icon} ${escapeHtml(app.name)}
+        </label>
+      `;
+    }).join('');
+  },
+
+  async renderManageUsers() {
+    const container = document.getElementById('admin-users-list');
+    if (!container) return;
+
+    try {
+      const { users } = await API._fetch('/api/auth/users');
+      
+      if (users.length === 0) {
+        container.innerHTML = `<p class="text-muted" style="font-size: 0.8rem;">No registered users found.</p>`;
+        return;
+      }
+
+      container.innerHTML = users.map(user => `
+        <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(255,255,255,0.01); border: 1px solid var(--border); padding: 0.4rem 0.6rem; border-radius: var(--radius-sm); margin-bottom: 0.25rem;">
+          <span style="font-size: 0.85rem; font-weight: 500;">👤 ${escapeHtml(user.name)} ${user.isAdmin ? '<strong style="color:var(--accent-primary);">[Admin]</strong>' : ''}</span>
+          <button class="btn btn-sm btn-text" onclick="AdminView.resetUserPassword('${user.id}', '${escapeHtml(user.name)}')" style="color: var(--warning); padding: 2px 8px; font-size: 0.75rem;">Reset Pass</button>
+        </div>
+      `).join('');
+    } catch (err) {
+      container.innerHTML = `<p class="text-danger" style="font-size: 0.8rem;">Error loading users.</p>`;
+    }
+  },
+
+  async resetUserPassword(userId, userName) {
+    const result = await SwalCustom.fire({
+      title: `Reset Password for ${userName}`,
+      text: 'Enter new password (6+ chars, alphanumeric, special char):',
+      input: 'password',
+      inputPlaceholder: 'New Password',
+      showCancelButton: true,
+      confirmButtonText: 'Reset',
+      cancelButtonText: 'Cancel'
+    });
+    if (!result.isConfirmed || !result.value) return;
+    
+    const newPwd = result.value.trim();
+    const passwordRegex = /^(?=.*[a-zA-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{6,}$/;
+    if (!passwordRegex.test(newPwd)) {
+      showToast('❌ Password must be 6+ characters and contain letter, number, and special character');
+      return;
+    }
+
+    try {
+      await API.adminResetPassword(userId, newPwd);
+      showToast(`✅ Password reset successfully for ${userName}!`);
+    } catch (err) {
+      showToast(`❌ Failed to reset password: ${err.message}`);
+    }
+  },
+
+  async manualConfirm(userId, userName, amount) {
+    try {
+      await API.manualConfirmPayment(userId, userName, amount);
+      showToast(`✅ Payment confirmed for ${userName}!`);
+      await UserView.refresh();
+      this.renderPaymentAdmin();
+    } catch (e) {
+      showToast('❌ Failed to confirm payment');
+    }
+  },
+
+  openOOSMoveModal(orderId, productName) {
+    document.getElementById('oos-move-order-id').value = orderId;
+    document.getElementById('oos-move-name').value = productName;
+    document.getElementById('oos-move-link').value = '';
+    document.getElementById('oos-move-price').value = '';
+    
+    this.oosTargetAppId = UserView.apps.length > 0 ? UserView.apps[0].id : null;
+    this.renderOOSAppPicker();
+    document.getElementById('modal-oos-move').classList.remove('hidden');
+  },
+
+  closeOOSMoveModal() {
+    document.getElementById('modal-oos-move').classList.add('hidden');
+  },
+
+  renderOOSAppPicker() {
+    const container = document.getElementById('oos-app-picker');
+    if (!container) return;
+    
+    const session = UserView.currentSession;
+    const allowedAppIds = session?.allowedAppIds || [];
+    const activeApps = UserView.apps.filter(app => {
+      if (allowedAppIds.length > 0 && !allowedAppIds.includes(app.id)) return false;
+      return true;
+    });
+
+    container.innerHTML = activeApps.map(app =>
+      `<div class="app-chip ${this.oosTargetAppId === app.id ? 'selected' : ''}" 
+             style="--chip-color: ${app.color}" 
+             data-app-id="${app.id}" 
+             onclick="AdminView.selectOOSApp('${app.id}')">
+         <span>${app.icon}</span>
+         <span>${escapeHtml(app.name)}</span>
+       </div>`
+     ).join('');
+  },
+
+  selectOOSApp(appId) {
+    this.oosTargetAppId = appId;
+    const container = document.getElementById('oos-app-picker');
+    if (!container) return;
+    container.querySelectorAll('.app-chip').forEach(chip => {
+      chip.classList.toggle('selected', chip.dataset.appId === appId);
+    });
+  },
+
+  showAdminOnboardingTutorial() {
+    const slides = [
+      { icon: '⚙️', title: 'Admin Controls Dashboard', text: 'Advance session statuses (Adding -> Locked -> Ordered -> Delivered -> Settled) and restrict allowed platforms.' },
+      { icon: '💵', title: 'Calculated Bill Splits', text: 'Enter final bills from the delivery apps. The server automatically splits delivery fees and discounts proportionally!' },
+      { icon: '💳', title: 'Direct Payment Confirm', text: 'Directly confirm user payments with a single click. Useful for cash or offline pay confirmation!' },
+      { icon: '🚫', title: 'Out of Stock Redirection', text: 'If a product is OOS, click "Move" to switch it to another active platform, scrape new details, and reset status back to pending.' }
+    ];
+    Tutorial.show(slides);
   },
 };

@@ -3,12 +3,77 @@ const fs = require('fs');
 const path = require('path');
 const mongoose = require('mongoose');
 const cheerio = require('cheerio');
+const crypto = require('crypto');
 
 const app = express();
 const PORT = 3000;
 const DATA_FILE = path.join(__dirname, 'data', 'store.json');
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/groupcart';
+const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
+
+// Password & Token Helpers
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.pbkdf2Sync(password, salt, 1000, 64, 'sha512').toString('hex');
+  return { salt, hash };
+}
+
+function verifyPassword(password, salt, hash) {
+  const verifyHash = crypto.pbkdf2Sync(password, salt, 1000, 64, 'sha512').toString('hex');
+  return hash === verifyHash;
+}
+
+function generateToken(payload) {
+  const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
+  const body = Buffer.from(JSON.stringify({ ...payload, exp: Math.floor(Date.now() / 1000) + (7 * 24 * 60 * 60) })).toString('base64url');
+  const signature = crypto.createHmac('sha256', JWT_SECRET).update(`${header}.${body}`).digest('base64url');
+  return `${header}.${body}.${signature}`;
+}
+
+function verifyToken(token) {
+  try {
+    const [header, body, signature] = token.split('.');
+    const expectedSignature = crypto.createHmac('sha256', JWT_SECRET).update(`${header}.${body}`).digest('base64url');
+    if (signature !== expectedSignature) return null;
+    
+    const payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
+    if (payload.exp && Date.now() / 1000 > payload.exp) return null;
+    
+    return payload;
+  } catch (e) {
+    return null;
+  }
+}
+
+// Authentication Middleware
+async function authenticateToken(req, res, next) {
+  try {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+    
+    if (!token) return res.status(401).json({ error: 'Authentication required' });
+    
+    const payload = verifyToken(token);
+    if (!payload) return res.status(403).json({ error: 'Session expired or invalid' });
+    
+    const user = await User.findOne({ id: payload.userId });
+    if (!user) return res.status(403).json({ error: 'User not found' });
+    
+    req.user = user;
+    next();
+  } catch (err) {
+    console.error('Auth middleware error:', err);
+    res.status(500).json({ error: 'Authentication error' });
+  }
+}
+
+function requireAdmin(req, res, next) {
+  if (!req.user || !req.user.isAdmin) {
+    return res.status(403).json({ error: 'Admin access required' });
+  }
+  next();
+}
 
 // Middleware
 app.use(express.json());
@@ -18,6 +83,8 @@ app.use(express.static(path.join(__dirname, 'public')));
 const userSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true },
   name: { type: String, required: true },
+  passwordHash: { type: String },
+  salt: { type: String },
   isAdmin: { type: Boolean, default: false },
   createdAt: { type: Date, default: Date.now }
 }, { id: false });
@@ -41,6 +108,7 @@ const orderSchema = new mongoose.Schema({
   productName: { type: String, required: true },
   qty: { type: Number, default: 1 },
   estimatedPrice: { type: Number, default: 0 },
+  discount: { type: Number, default: 0 },
   status: { type: String, default: 'pending', enum: ['pending', 'confirmed', 'out-of-stock', 'returned', 'not-delivered'] },
   statusNote: { type: String, default: '' },
   statusUpdatedBy: { type: String },
@@ -71,7 +139,10 @@ const sessionSchema = new mongoose.Schema({
   status: { type: String, default: 'adding', enum: ['adding', 'locked', 'ordered', 'delivered', 'settled'] },
   splitMode: { type: String, default: 'proportional', enum: ['proportional', 'equal', 'custom'] },
   customSplits: { type: Map, of: Number, default: {} },
-  freeDeliveryThresholds: { type: Map, of: Number, default: {} }
+  freeDeliveryThresholds: { type: Map, of: Number, default: {} },
+  roundingMode: { type: String, default: 'automatic', enum: ['automatic', 'up', 'down'] },
+  payerMap: { type: Map, of: String, default: {} },
+  allowedAppIds: { type: [String], default: [] }
 }, { id: false });
 const Session = mongoose.model('Session', sessionSchema);
 
@@ -104,6 +175,22 @@ const paymentSchema = new mongoose.Schema({
   confirmedBy: { type: String }
 }, { id: false });
 const Payment = mongoose.model('Payment', paymentSchema);
+
+const complaintSchema = new mongoose.Schema({
+  id: { type: String, required: true, unique: true },
+  sessionId: { type: String, required: true, index: true },
+  orderId: { type: String, index: true },
+  userId: { type: String, required: true },
+  userName: { type: String, required: true },
+  productName: { type: String, required: true },
+  type: { type: String, required: true, enum: ['expired', 'damaged', 'missing', 'wrong-item', 'other'] },
+  note: { type: String, default: '' },
+  photoUrl: { type: String, default: '' },
+  status: { type: String, default: 'open', enum: ['open', 'resolved', 'refunded'] },
+  refundAmount: { type: Number, default: 0 },
+  createdAt: { type: Date, default: Date.now }
+}, { id: false });
+const Complaint = mongoose.model('Complaint', complaintSchema);
 
 async function getActiveSession() {
   let session = await Session.findOne({ active: true }).sort({ createdAt: -1 });
@@ -241,38 +328,147 @@ app.get('/api/events', (req, res) => {
 // --- Auth ---
 app.post('/api/auth/login', async (req, res) => {
   try {
-    const { name, isAdmin, adminPassword } = req.body;
+    const { name, password, newPassword, isRegister } = req.body;
     if (!name || !name.trim()) return res.status(400).json({ error: 'Name is required' });
 
-    if (isAdmin && adminPassword !== ADMIN_PASSWORD) {
-      return res.status(401).json({ error: 'Invalid admin password' });
-    }
+    const lowercaseName = name.trim().toLowerCase();
+    const isAdminUser = lowercaseName === 'admin';
 
     // Case-insensitive user lookup using collation
     let user = await User.findOne({ name: name.trim() }).collation({ locale: 'en', strength: 2 });
 
     if (!user) {
+      // Registering a new user
+      if (!isRegister) {
+        return res.status(401).json({ error: 'Account not found. Select "Sign Up" below to register.' });
+      }
+      if (!password) {
+        return res.json({ registerRequired: true });
+      }
+      
+      // If registering as admin, password must match ADMIN_PASSWORD
+      if (isAdminUser && password !== ADMIN_PASSWORD) {
+        return res.status(401).json({ error: 'To register the Admin account, the password must match the master admin password.' });
+      }
+
+      // Validate password complexity (non-admin accounts only)
+      if (!isAdminUser) {
+        const passwordRegex = /^(?=.*[a-zA-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{6,}$/;
+        if (!passwordRegex.test(password)) {
+          return res.status(400).json({ error: 'Password must be at least 6 characters long and contain alphanumeric and special characters.' });
+        }
+      }
+
+      const { salt, hash } = hashPassword(password);
       user = new User({
         id: generateId(),
         name: name.trim(),
-        isAdmin: !!isAdmin,
+        passwordHash: hash,
+        salt,
+        isAdmin: isAdminUser,
         createdAt: new Date()
       });
       await user.save();
       broadcastSSE('user-joined', { user });
     } else {
-      user.isAdmin = !!isAdmin;
-      await user.save();
+      // Existing user
+      if (!user.passwordHash) {
+        // Legacy user without password
+        if (newPassword) {
+          const passwordRegex = /^(?=.*[a-zA-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{6,}$/;
+          if (!passwordRegex.test(newPassword)) {
+            return res.status(400).json({ error: 'Password must be at least 6 characters long and contain alphanumeric and special characters.' });
+          }
+          const { salt, hash } = hashPassword(newPassword);
+          user.passwordHash = hash;
+          user.salt = salt;
+          if (isAdminUser) user.isAdmin = true;
+          await user.save();
+        } else {
+          return res.json({ legacySetupRequired: true });
+        }
+      } else {
+        // Authenticate password
+        if (!password) {
+          return res.status(400).json({ error: 'Password is required' });
+        }
+        if (!verifyPassword(password, user.salt, user.passwordHash)) {
+          return res.status(401).json({ error: 'Incorrect password' });
+        }
+        
+        // Safety: Auto upgrade user.isAdmin if username is admin
+        if (isAdminUser && !user.isAdmin) {
+          user.isAdmin = true;
+          await user.save();
+        }
+      }
     }
 
-    res.json({ user });
+    const token = generateToken({ userId: user.id, username: user.name, isAdmin: user.isAdmin });
+    res.json({ user, token });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-app.get('/api/auth/users', async (req, res) => {
+app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
+  try {
+    const { password, newPassword } = req.body;
+    if (!password || !newPassword) {
+      return res.status(400).json({ error: 'Both current password and new password are required' });
+    }
+
+    const user = req.user;
+    if (user.passwordHash && !verifyPassword(password, user.salt, user.passwordHash)) {
+      return res.status(401).json({ error: 'Incorrect current password' });
+    }
+
+    const passwordRegex = /^(?=.*[a-zA-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{6,}$/;
+    if (!passwordRegex.test(newPassword)) {
+      return res.status(400).json({ error: 'New password must be at least 6 characters and contain alphanumeric/special characters.' });
+    }
+
+    const { salt, hash } = hashPassword(newPassword);
+    user.passwordHash = hash;
+    user.salt = salt;
+    await user.save();
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.post('/api/auth/admin-reset-password', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { userId, newPassword } = req.body;
+    if (!userId || !newPassword) {
+      return res.status(400).json({ error: 'UserId and new password are required' });
+    }
+
+    const passwordRegex = /^(?=.*[a-zA-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{6,}$/;
+    if (!passwordRegex.test(newPassword)) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters and contain alphanumeric/special characters.' });
+    }
+
+    const user = await User.findOne({ id: userId });
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const { salt, hash } = hashPassword(newPassword);
+    user.passwordHash = hash;
+    user.salt = salt;
+    await user.save();
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.get('/api/auth/users', authenticateToken, async (req, res) => {
   try {
     const users = await User.find();
     res.json({ users });
@@ -283,7 +479,7 @@ app.get('/api/auth/users', async (req, res) => {
 });
 
 // --- Apps ---
-app.get('/api/apps', async (req, res) => {
+app.get('/api/apps', authenticateToken, async (req, res) => {
   try {
     const apps = await App.find();
     res.json({ apps });
@@ -293,7 +489,7 @@ app.get('/api/apps', async (req, res) => {
   }
 });
 
-app.post('/api/apps', async (req, res) => {
+app.post('/api/apps', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { name, color, icon } = req.body;
     if (!name) return res.status(400).json({ error: 'App name is required' });
@@ -315,7 +511,7 @@ app.post('/api/apps', async (req, res) => {
   }
 });
 
-app.delete('/api/apps/:id', async (req, res) => {
+app.delete('/api/apps/:id', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const appItem = await App.findOneAndDelete({ id: req.params.id });
     if (!appItem) return res.status(404).json({ error: 'App not found' });
@@ -329,7 +525,7 @@ app.delete('/api/apps/:id', async (req, res) => {
 });
 
 // --- Orders ---
-app.get('/api/orders', async (req, res) => {
+app.get('/api/orders', authenticateToken, async (req, res) => {
   try {
     const activeSession = await getActiveSession();
     const sessionId = req.query.sessionId || activeSession.id;
@@ -345,25 +541,36 @@ app.get('/api/orders', async (req, res) => {
   }
 });
 
-app.post('/api/orders', async (req, res) => {
+app.post('/api/orders', authenticateToken, async (req, res) => {
   try {
-    const { userId, userName, appId, link, productName, qty, estimatedPrice } = req.body;
-    if (!userId || !appId || !productName) {
-      return res.status(400).json({ error: 'userId, appId, and productName are required' });
+    const { userId, userName, appId, link, productName, qty, estimatedPrice, discount } = req.body;
+    if (!appId || !productName) {
+      return res.status(400).json({ error: 'appId and productName are required' });
     }
 
     const activeSession = await getActiveSession();
+    if (['locked', 'ordered', 'delivered', 'settled'].includes(activeSession.status) && !req.user.isAdmin) {
+      return res.status(403).json({ error: 'This session is locked/closed. Cart updates are disabled.' });
+    }
+
+    let finalUserId = req.user.id;
+    let finalUserName = req.user.name;
+    if (req.user.isAdmin && userId) {
+      finalUserId = userId;
+      finalUserName = userName || userId;
+    }
 
     const order = new Order({
       id: generateId(),
       sessionId: activeSession.id,
-      userId,
-      userName,
+      userId: finalUserId,
+      userName: finalUserName,
       appId,
       link: link || '',
       productName,
       qty: qty || 1,
       estimatedPrice: parseFloat(estimatedPrice) || 0,
+      discount: parseFloat(discount) || 0,
       createdAt: new Date()
     });
 
@@ -376,22 +583,37 @@ app.post('/api/orders', async (req, res) => {
   }
 });
 
-app.put('/api/orders/:id', async (req, res) => {
+app.put('/api/orders/:id', authenticateToken, async (req, res) => {
   try {
+    const activeSession = await getActiveSession();
+    if (['locked', 'ordered', 'delivered', 'settled'].includes(activeSession.status) && !req.user.isAdmin) {
+      return res.status(403).json({ error: 'This session is locked/closed. Cart updates are disabled.' });
+    }
+
     const order = await Order.findOne({ id: req.params.id });
     if (!order) return res.status(404).json({ error: 'Order not found' });
 
-    const allowed = ['appId', 'link', 'productName', 'qty', 'estimatedPrice'];
+    if (order.userId !== req.user.id && !req.user.isAdmin) {
+      return res.status(403).json({ error: 'You can only modify your own orders.' });
+    }
+
+    const allowed = ['appId', 'link', 'productName', 'qty', 'estimatedPrice', 'discount'];
     for (const key of allowed) {
       if (req.body[key] !== undefined) {
-        order[key] = key === 'estimatedPrice' ? parseFloat(req.body[key]) : (key === 'qty' ? parseInt(req.body[key]) : req.body[key]);
+        if (key === 'estimatedPrice' || key === 'discount') {
+          order[key] = parseFloat(req.body[key]);
+        } else if (key === 'qty') {
+          order[key] = parseInt(req.body[key]);
+        } else {
+          order[key] = req.body[key];
+        }
       }
     }
 
     // Track admin price override
     if (req.body.adminOverride) {
       order.adminModified = true;
-      order.adminModifiedBy = req.body.adminName || 'Admin';
+      order.adminModifiedBy = req.body.adminName || req.user.name || 'Admin';
       order.adminModifiedAt = new Date();
     }
 
@@ -404,11 +626,21 @@ app.put('/api/orders/:id', async (req, res) => {
   }
 });
 
-app.delete('/api/orders/:id', async (req, res) => {
+app.delete('/api/orders/:id', authenticateToken, async (req, res) => {
   try {
-    const order = await Order.findOneAndDelete({ id: req.params.id });
+    const activeSession = await getActiveSession();
+    if (['locked', 'ordered', 'delivered', 'settled'].includes(activeSession.status) && !req.user.isAdmin) {
+      return res.status(403).json({ error: 'This session is locked/closed. Cart updates are disabled.' });
+    }
+
+    const order = await Order.findOne({ id: req.params.id });
     if (!order) return res.status(404).json({ error: 'Order not found' });
 
+    if (order.userId !== req.user.id && !req.user.isAdmin) {
+      return res.status(403).json({ error: 'You can only delete your own orders.' });
+    }
+
+    await Order.findOneAndDelete({ id: req.params.id });
     broadcastSSE('order-removed', { orderId: req.params.id });
     res.json({ success: true, order });
   } catch (err) {
@@ -519,17 +751,18 @@ app.post('/api/bills', async (req, res) => {
 });
 
 // --- Settlement ---
-app.get('/api/settlement', async (req, res) => {
+app.get('/api/settlement', authenticateToken, async (req, res) => {
   try {
     const activeSession = await getActiveSession();
     const sessionId = req.query.sessionId || activeSession.id;
     const currentSession = await Session.findOne({ id: sessionId });
     const settings = await getSettings();
 
-    const [allOrders, bills, apps] = await Promise.all([
+    const [allOrders, bills, apps, refundedComplaints] = await Promise.all([
       Order.find({ sessionId }).lean(),
       Bill.find({ sessionId }).lean(),
       App.find().lean(),
+      Complaint.find({ sessionId, status: 'refunded' }).lean()
     ]);
 
     // Separate active vs excluded orders
@@ -552,12 +785,17 @@ app.get('/api/settlement', async (req, res) => {
       excludedByApp[order.appId].total += order.estimatedPrice * order.qty;
     }
 
-    // Per-app discount info (based on active orders only)
+    // Per-app discount info (based on active orders only, accounting for individual discounts)
     const appDiscounts = {};
     const billWarnings = {};
     for (const bill of bills) {
       const appOrders = ordersByApp[bill.appId] || [];
-      const totalEstimated = appOrders.reduce((sum, o) => sum + (o.estimatedPrice * o.qty), 0);
+      // totalEstimated = sum( (estimatedPrice * qty) - discount )
+      const totalEstimated = appOrders.reduce((sum, o) => {
+        const itemTotal = o.estimatedPrice * o.qty;
+        const itemDiscount = o.discount || 0;
+        return sum + Math.max(0, itemTotal - itemDiscount);
+      }, 0);
 
       if (totalEstimated > 0) {
         const discountPercent = ((totalEstimated - bill.actualAmount) / totalEstimated) * 100;
@@ -583,15 +821,17 @@ app.get('/api/settlement', async (req, res) => {
     const userTotals = {};
     for (const order of orders) {
       if (!userTotals[order.userId]) {
-        userTotals[order.userId] = { userId: order.userId, userName: order.userName, apps: {}, total: 0 };
+        userTotals[order.userId] = { userId: order.userId, userName: order.userName, apps: {}, total: 0, refundTotal: 0 };
       }
 
       const itemTotal = order.estimatedPrice * order.qty;
+      const itemDiscount = order.discount || 0;
+      const netEstimated = Math.max(0, itemTotal - itemDiscount);
       const discount = appDiscounts[order.appId];
-      let finalAmount = itemTotal;
+      let finalAmount = netEstimated;
 
       if (discount) {
-        finalAmount = itemTotal * (1 - discount.discountPercent / 100);
+        finalAmount = netEstimated * (1 - discount.discountPercent / 100);
       }
 
       if (!userTotals[order.userId].apps[order.appId]) {
@@ -604,9 +844,10 @@ app.get('/api/settlement', async (req, res) => {
     }
 
     const splitMode = currentSession.splitMode || 'proportional';
+    const roundingMode = currentSession.roundingMode || 'automatic';
 
     if (splitMode === 'proportional') {
-      // Smart rounding per app to match actual bill exactly
+      // Smart rounding per app to match actual bill exactly or ceiling/floor
       for (const appId in appDiscounts) {
         const discount = appDiscounts[appId];
         const usersOnApp = [];
@@ -625,7 +866,12 @@ app.get('/api/settlement', async (req, res) => {
 
         for (const { userId, appData } of usersOnApp) {
           const raw = appData.final;
-          const rounded = Math.round(raw);
+          let rounded = Math.round(raw);
+          if (roundingMode === 'up') {
+            rounded = Math.ceil(raw);
+          } else if (roundingMode === 'down') {
+            rounded = Math.floor(raw);
+          }
           const frac = raw - Math.floor(raw);
 
           appData.final = rounded;
@@ -636,9 +882,11 @@ app.get('/api/settlement', async (req, res) => {
           }
         }
 
-        const diff = discount.actualAmount - roundedSum;
-        if (diff !== 0 && maxFrac.userId) {
-          userTotals[maxFrac.userId].apps[appId].final += diff;
+        if (roundingMode === 'automatic') {
+          const diff = discount.actualAmount - roundedSum;
+          if (diff !== 0 && maxFrac.userId) {
+            userTotals[maxFrac.userId].apps[appId].final += diff;
+          }
         }
       }
 
@@ -710,6 +958,27 @@ app.get('/api/settlement', async (req, res) => {
       });
     }
 
+    // Deduct complaints refunds
+    for (const userId in userTotals) {
+      const userRefund = refundedComplaints
+        .filter(c => c.userId === userId)
+        .reduce((sum, c) => sum + (c.refundAmount || 0), 0);
+      userTotals[userId].refundTotal = userRefund;
+      userTotals[userId].total = Math.max(0, userTotals[userId].total - userRefund);
+    }
+
+    // Process payer links (payerMap: userId -> payerUserId)
+    const payerMap = currentSession.payerMap ? Object.fromEntries(currentSession.payerMap) : {};
+    for (const userId in userTotals) {
+      const payerId = payerMap[userId];
+      if (payerId && payerId !== userId && userTotals[payerId]) {
+        userTotals[payerId].total += userTotals[userId].total;
+        userTotals[userId].paidBy = payerId;
+        userTotals[userId].paidByName = userTotals[payerId].userName;
+        userTotals[userId].total = 0;
+      }
+    }
+
     res.json({
       users: Object.values(userTotals),
       appDiscounts,
@@ -726,7 +995,7 @@ app.get('/api/settlement', async (req, res) => {
 });
 
 // --- Session ---
-app.get('/api/sessions', async (req, res) => {
+app.get('/api/sessions', authenticateToken, async (req, res) => {
   try {
     const sessions = await Session.find().sort({ createdAt: -1 });
     res.json({ sessions });
@@ -736,7 +1005,7 @@ app.get('/api/sessions', async (req, res) => {
   }
 });
 
-app.post('/api/session/reset', async (req, res) => {
+app.post('/api/session/reset', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { name } = req.body;
     
@@ -773,7 +1042,7 @@ app.post('/api/session/reset', async (req, res) => {
   }
 });
 
-app.get('/api/session', async (req, res) => {
+app.get('/api/session', authenticateToken, async (req, res) => {
   try {
     const session = await getActiveSession();
     res.json({ session });
@@ -941,7 +1210,7 @@ app.post('/api/scrape-url', async (req, res) => {
 });
 
 // --- Session status flow ---
-app.put('/api/session/status', async (req, res) => {
+app.put('/api/session/status', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { status, adminName, name } = req.body;
     const validStatuses = ['adding', 'locked', 'ordered', 'delivered', 'settled'];
@@ -970,8 +1239,56 @@ app.put('/api/session/status', async (req, res) => {
   }
 });
 
+// --- Session Allowed Apps ---
+app.put('/api/session/allowed-apps', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { allowedAppIds } = req.body;
+    if (!allowedAppIds || !Array.isArray(allowedAppIds)) {
+      return res.status(400).json({ error: 'allowedAppIds must be an array of app IDs' });
+    }
+    const session = await getActiveSession();
+    session.allowedAppIds = allowedAppIds;
+    await session.save();
+    broadcastSSE('session-split-mode-updated', { allowedAppIds, sessionId: session.id });
+    res.json({ success: true, session });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// --- Link Payer for Session ---
+app.post('/api/session/link-payer', authenticateToken, async (req, res) => {
+  try {
+    const { payerUserId, targetUserIds } = req.body;
+    if (!targetUserIds || !Array.isArray(targetUserIds)) {
+      return res.status(400).json({ error: 'targetUserIds must be an array' });
+    }
+    const session = await getActiveSession();
+    
+    if (!session.payerMap) session.payerMap = new Map();
+    
+    if (payerUserId) {
+      for (const uid of targetUserIds) {
+        session.payerMap.set(uid, payerUserId);
+      }
+    } else {
+      for (const uid of targetUserIds) {
+        session.payerMap.delete(uid);
+      }
+    }
+    
+    await session.save();
+    broadcastSSE('session-split-mode-updated', { sessionId: session.id });
+    res.json({ success: true, session });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // --- Payments ---
-app.get('/api/payments', async (req, res) => {
+app.get('/api/payments', authenticateToken, async (req, res) => {
   try {
     const activeSession = await getActiveSession();
     const sessionId = req.query.sessionId || activeSession.id;
@@ -983,7 +1300,8 @@ app.get('/api/payments', async (req, res) => {
   }
 });
 
-app.post('/api/payments/mark-paid', async (req, res) => {
+// Supports part payments / multiple payments
+app.post('/api/payments/mark-paid', authenticateToken, async (req, res) => {
   try {
     const { userId, userName, amount } = req.body;
     if (!userId || !userName || amount === undefined) {
@@ -991,23 +1309,15 @@ app.post('/api/payments/mark-paid', async (req, res) => {
     }
 
     const activeSession = await getActiveSession();
-    let payment = await Payment.findOne({ sessionId: activeSession.id, userId });
-    if (payment) {
-      payment.amount = amount;
-      payment.markedPaidAt = new Date();
-      payment.confirmedByAdmin = false;
-      payment.confirmedAt = undefined;
-      payment.confirmedBy = undefined;
-    } else {
-      payment = new Payment({
-        id: generateId(),
-        sessionId: activeSession.id,
-        userId,
-        userName,
-        amount,
-        markedPaidAt: new Date()
-      });
-    }
+    const payment = new Payment({
+      id: generateId(),
+      sessionId: activeSession.id,
+      userId,
+      userName,
+      amount: parseFloat(amount),
+      markedPaidAt: new Date(),
+      confirmedByAdmin: false
+    });
 
     await payment.save();
     broadcastSSE('payment-updated', { payment });
@@ -1018,7 +1328,37 @@ app.post('/api/payments/mark-paid', async (req, res) => {
   }
 });
 
-app.put('/api/payments/:id/confirm', async (req, res) => {
+// Manual payment confirm by admin (for unpaid users as well)
+app.post('/api/payments/manual-confirm', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { userId, userName, amount } = req.body;
+    if (!userId || !userName || amount === undefined) {
+      return res.status(400).json({ error: 'userId, userName and amount are required' });
+    }
+
+    const activeSession = await getActiveSession();
+    const payment = new Payment({
+      id: generateId(),
+      sessionId: activeSession.id,
+      userId,
+      userName,
+      amount: parseFloat(amount),
+      markedPaidAt: new Date(),
+      confirmedByAdmin: true,
+      confirmedAt: new Date(),
+      confirmedBy: req.user.name || 'Admin'
+    });
+
+    await payment.save();
+    broadcastSSE('payment-updated', { payment });
+    res.json({ success: true, payment });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.put('/api/payments/:id/confirm', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { confirmed, adminName } = req.body;
     const payment = await Payment.findOne({ id: req.params.id });
@@ -1026,7 +1366,7 @@ app.put('/api/payments/:id/confirm', async (req, res) => {
 
     payment.confirmedByAdmin = confirmed !== false;
     payment.confirmedAt = confirmed !== false ? new Date() : undefined;
-    payment.confirmedBy = confirmed !== false ? (adminName || 'Admin') : undefined;
+    payment.confirmedBy = confirmed !== false ? (adminName || req.user.name || 'Admin') : undefined;
 
     await payment.save();
     broadcastSSE('payment-updated', { payment });
@@ -1038,7 +1378,7 @@ app.put('/api/payments/:id/confirm', async (req, res) => {
 });
 
 // --- Favorites ---
-app.get('/api/favorites', async (req, res) => {
+app.get('/api/favorites', authenticateToken, async (req, res) => {
   try {
     const { userId } = req.query;
     if (!userId) return res.status(400).json({ error: 'userId is required' });
@@ -1051,7 +1391,7 @@ app.get('/api/favorites', async (req, res) => {
   }
 });
 
-app.post('/api/favorites', async (req, res) => {
+app.post('/api/favorites', authenticateToken, async (req, res) => {
   try {
     const { userId, appId, productName, estimatedPrice, link } = req.body;
     if (!userId || !appId || !productName) {
@@ -1082,7 +1422,7 @@ app.post('/api/favorites', async (req, res) => {
   }
 });
 
-app.delete('/api/favorites/:id', async (req, res) => {
+app.delete('/api/favorites/:id', authenticateToken, async (req, res) => {
   try {
     const favorite = await Favorite.findOneAndDelete({ id: req.params.id });
     if (!favorite) return res.status(404).json({ error: 'Favorite not found' });
@@ -1095,7 +1435,7 @@ app.delete('/api/favorites/:id', async (req, res) => {
 });
 
 // --- Platform Free Delivery Thresholds ---
-app.put('/api/session/thresholds', async (req, res) => {
+app.put('/api/session/thresholds', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { thresholds } = req.body;
     if (!thresholds || typeof thresholds !== 'object') {
@@ -1114,21 +1454,21 @@ app.put('/api/session/thresholds', async (req, res) => {
 });
 
 // --- Session Split Mode ---
-app.put('/api/session/split-mode', async (req, res) => {
+app.put('/api/session/split-mode', authenticateToken, requireAdmin, async (req, res) => {
   try {
-    const { splitMode, customSplits } = req.body;
+    const { splitMode, customSplits, roundingMode } = req.body;
     const validModes = ['proportional', 'equal', 'custom'];
-    if (!validModes.includes(splitMode)) {
+    if (splitMode && !validModes.includes(splitMode)) {
       return res.status(400).json({ error: 'Invalid splitMode' });
     }
 
     const session = await getActiveSession();
-    session.splitMode = splitMode;
-    if (customSplits) {
-      session.customSplits = customSplits;
-    }
+    if (splitMode) session.splitMode = splitMode;
+    if (customSplits) session.customSplits = customSplits;
+    if (roundingMode) session.roundingMode = roundingMode;
+    
     await session.save();
-    broadcastSSE('session-split-mode-updated', { splitMode, customSplits, sessionId: session.id });
+    broadcastSSE('session-split-mode-updated', { splitMode, customSplits, roundingMode, sessionId: session.id });
     res.json({ success: true, session });
   } catch (err) {
     console.error(err);
@@ -1137,7 +1477,7 @@ app.put('/api/session/split-mode', async (req, res) => {
 });
 
 // --- Settings (Admin) ---
-app.get('/api/settings', async (req, res) => {
+app.get('/api/settings', authenticateToken, async (req, res) => {
   try {
     const settings = await getSettings();
     res.json({ settings });
@@ -1147,13 +1487,74 @@ app.get('/api/settings', async (req, res) => {
   }
 });
 
-app.post('/api/settings', async (req, res) => {
+app.post('/api/settings', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { upiId } = req.body;
     const settings = await getSettings();
     settings.upiId = upiId || '';
     await settings.save();
     res.json({ success: true, settings });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// --- Complaints ---
+app.post('/api/complaints', authenticateToken, async (req, res) => {
+  try {
+    const { orderId, type, note, photoUrl, productName, refundAmount } = req.body;
+    if (!type || !productName) {
+      return res.status(400).json({ error: 'Complaint type and productName are required' });
+    }
+    const activeSession = await getActiveSession();
+    const complaint = new Complaint({
+      id: generateId(),
+      sessionId: activeSession.id,
+      orderId: orderId || undefined,
+      userId: req.user.id,
+      userName: req.user.name,
+      productName,
+      type,
+      note: note || '',
+      photoUrl: photoUrl || '',
+      refundAmount: parseFloat(refundAmount) || 0,
+      status: 'open',
+      createdAt: new Date()
+    });
+    await complaint.save();
+    broadcastSSE('payment-updated', {});
+    res.json({ success: true, complaint });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.get('/api/complaints', authenticateToken, async (req, res) => {
+  try {
+    const activeSession = await getActiveSession();
+    const sessionId = req.query.sessionId || activeSession.id;
+    const complaints = await Complaint.find({ sessionId });
+    res.json({ complaints });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.put('/api/complaints/:id/status', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { status, refundAmount } = req.body;
+    const complaint = await Complaint.findOne({ id: req.params.id });
+    if (!complaint) return res.status(404).json({ error: 'Complaint not found' });
+
+    if (status) complaint.status = status;
+    if (refundAmount !== undefined) complaint.refundAmount = parseFloat(refundAmount) || 0;
+    
+    await complaint.save();
+    broadcastSSE('payment-updated', {});
+    res.json({ success: true, complaint });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Internal server error' });

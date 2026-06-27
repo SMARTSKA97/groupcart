@@ -273,10 +273,32 @@
     }
   }
 
-  // ---- Login Form ----
-  document.getElementById('login-admin').addEventListener('change', function () {
-    document.getElementById('admin-password-group').classList.toggle('hidden', !this.checked);
-  });
+  // Toggle Signup / Login mode
+  const toggleSignupLink = document.getElementById('toggle-signup-link');
+  const loginModeInput = document.getElementById('login-mode');
+  const loginFormTitle = document.getElementById('login-form-title');
+  const loginConfirmGroup = document.getElementById('login-confirm-group');
+  const loginBtnSubmit = document.getElementById('login-btn-submit');
+  
+  if (toggleSignupLink) {
+    toggleSignupLink.addEventListener('click', function (e) {
+      e.preventDefault();
+      const isLogin = loginModeInput.value === 'login';
+      if (isLogin) {
+        loginModeInput.value = 'signup';
+        loginFormTitle.textContent = 'Create Account';
+        loginConfirmGroup.classList.remove('hidden');
+        loginBtnSubmit.textContent = 'Sign Up →';
+        toggleSignupLink.textContent = 'Already have an account? Log In';
+      } else {
+        loginModeInput.value = 'login';
+        loginFormTitle.textContent = 'Welcome Back';
+        loginConfirmGroup.classList.add('hidden');
+        loginBtnSubmit.textContent = 'Log In →';
+        toggleSignupLink.textContent = "Don't have an account? Sign Up";
+      }
+    });
+  }
 
   document.getElementById('login-form').addEventListener('submit', async function (e) {
     e.preventDefault();
@@ -284,24 +306,122 @@
     errorEl.classList.add('hidden');
 
     const name = document.getElementById('login-name').value.trim();
-    const isAdmin = document.getElementById('login-admin').checked;
-    const adminPassword = document.getElementById('login-admin-password').value;
+    const password = document.getElementById('login-password').value;
+    const confirmPassword = document.getElementById('login-confirm-password').value;
+    const mode = loginModeInput.value;
 
     if (!name) return;
 
     const btn = this.querySelector('button[type="submit"]');
     btn.disabled = true;
-    btn.textContent = 'Logging in...';
+    btn.textContent = mode === 'signup' ? 'Signing up...' : 'Logging in...';
+
+    // Password strength check helper
+    const passwordRegex = /^(?=.*[a-zA-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{6,}$/;
 
     try {
-      await Auth.login(name, isAdmin, adminPassword);
+      if (mode === 'signup') {
+        if (!password) {
+          throw new Error('Password is required');
+        }
+        if (password !== confirmPassword) {
+          throw new Error('Passwords do not match');
+        }
+        if (!passwordRegex.test(password)) {
+          throw new Error('Password must be 6+ characters and contain a letter, a number, and a special character');
+        }
+        
+        // Execute registration call
+        await Auth.login(name, password, false, '', '', true);
+      } else {
+        // Log in
+        const res = await Auth.login(name, password);
+        
+        if (res && res.legacySetupRequired) {
+          document.getElementById('legacy-name').value = name;
+          document.getElementById('modal-legacy-password').classList.remove('hidden');
+          btn.disabled = false;
+          btn.textContent = "Log In →";
+          return;
+        }
+
+        if (res && res.registerRequired) {
+          throw new Error('Account not found. Select "Sign Up" below to register.');
+        }
+      }
       showApp();
     } catch (err) {
       errorEl.textContent = err.message || 'Login failed';
       errorEl.classList.remove('hidden');
     } finally {
       btn.disabled = false;
-      btn.textContent = "Let's Go →";
+      btn.textContent = mode === 'signup' ? "Sign Up →" : "Log In →";
+    }
+  });
+
+  // ---- Legacy Password Setup Form ----
+  const legacyForm = document.getElementById('legacy-password-form');
+  if (legacyForm) {
+    legacyForm.addEventListener('submit', async function (e) {
+      e.preventDefault();
+      const errorEl = document.getElementById('legacy-error');
+      errorEl.classList.add('hidden');
+
+      const name = document.getElementById('legacy-name').value;
+      const newPwd = document.getElementById('legacy-new-password').value;
+      const rePwd = document.getElementById('legacy-retype-password').value;
+
+      if (!newPwd) {
+        errorEl.textContent = 'Password is required';
+        errorEl.classList.remove('hidden');
+        return;
+      }
+      if (newPwd !== rePwd) {
+        errorEl.textContent = 'Passwords do not match';
+        errorEl.classList.remove('hidden');
+        return;
+      }
+
+      const passwordRegex = /^(?=.*[a-zA-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{6,}$/;
+      if (!passwordRegex.test(newPwd)) {
+        errorEl.textContent = 'Password must be 6+ characters with a letter, number, and special char';
+        errorEl.classList.remove('hidden');
+        return;
+      }
+
+      const btn = this.querySelector('button[type="submit"]');
+      btn.disabled = true;
+      btn.textContent = 'Saving...';
+
+      try {
+        await Auth.login(name, '', false, '', newPwd);
+        document.getElementById('modal-legacy-password').classList.add('hidden');
+        showApp();
+      } catch (err) {
+        errorEl.textContent = err.message || 'Failed to setup password';
+        errorEl.classList.remove('hidden');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Save Password';
+      }
+    });
+  }
+
+  // ---- Payer Linking Dynamic Checkbox Handler ----
+  document.addEventListener('change', async (e) => {
+    if (e.target.classList.contains('payer-link-checkbox')) {
+      const checkedBoxes = document.querySelectorAll('.payer-link-checkbox:checked');
+      const targetUserIds = Array.from(checkedBoxes).map(cb => cb.value);
+      
+      try {
+        await API.linkPayer(Auth.getUserId(), targetUserIds);
+        showToast('🔗 Bill groupings updated!');
+        await UserView.refresh();
+        UserView.renderPayments();
+      } catch (err) {
+        showToast('❌ Failed to update payment grouping');
+        e.target.checked = !e.target.checked; // Revert checkbox check on error
+      }
     }
   });
 
@@ -548,7 +668,7 @@ function updateNavBadges() {
   const excludedStatuses = ['out-of-stock', 'returned', 'not-delivered'];
 
   const myActiveCount = orders.filter(o => o.userId === userId && !excludedStatuses.includes(o.status)).length;
-  const mineTab = document.querySelector('.nav-item[data-tab="my-orders"]');
+  const mineTab = document.querySelector('.nav-item[data-tab="home"]');
   let mineBadge = mineTab.querySelector('.nav-badge');
   if (myActiveCount > 0) {
     if (!mineBadge) {

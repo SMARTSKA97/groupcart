@@ -3,10 +3,21 @@
 const API = {
   async _fetch(url, options = {}) {
     try {
+      const headers = { 'Content-Type': 'application/json', ...options.headers };
+      if (Auth && Auth.token) {
+        headers['Authorization'] = `Bearer ${Auth.token}`;
+      }
       const res = await fetch(url, {
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         ...options,
       });
+
+      if (res.status === 401 && !url.includes('/api/auth/login')) {
+        if (Auth) Auth.logout();
+        window.location.reload();
+        throw new Error('Session expired. Please log in again.');
+      }
+
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Request failed');
       return data;
@@ -170,6 +181,64 @@ const API = {
     return this._fetch('/api/session/split-mode', {
       method: 'PUT',
       body: JSON.stringify({ splitMode, customSplits }),
+    });
+  },
+
+  // Change Password
+  changePassword(password, newPassword) {
+    return this._fetch('/api/auth/change-password', {
+      method: 'POST',
+      body: JSON.stringify({ password, newPassword }),
+    });
+  },
+
+  // Admin Reset Password
+  adminResetPassword(userId, newPassword) {
+    return this._fetch('/api/auth/admin-reset-password', {
+      method: 'POST',
+      body: JSON.stringify({ userId, newPassword }),
+    });
+  },
+
+  // Manual Payment Confirmation by Admin
+  manualConfirmPayment(userId, userName, amount) {
+    return this._fetch('/api/payments/manual-confirm', {
+      method: 'POST',
+      body: JSON.stringify({ userId, userName, amount }),
+    });
+  },
+
+  // Allowed Apps for Session
+  setAllowedApps(allowedAppIds) {
+    return this._fetch('/api/session/allowed-apps', {
+      method: 'PUT',
+      body: JSON.stringify({ allowedAppIds }),
+    });
+  },
+
+  // Link Payer for Session
+  linkPayer(payerUserId, targetUserIds) {
+    return this._fetch('/api/session/link-payer', {
+      method: 'POST',
+      body: JSON.stringify({ payerUserId, targetUserIds }),
+    });
+  },
+
+  // Complaints
+  submitComplaint(complaint) {
+    return this._fetch('/api/complaints', {
+      method: 'POST',
+      body: JSON.stringify(complaint),
+    });
+  },
+  getComplaints(sessionId) {
+    const q = sessionId ? `?sessionId=${sessionId}` : '';
+    return this._fetch(`/api/complaints${q}`);
+  },
+  updateComplaintStatus(id, status, refundAmount) {
+    return this._fetch(`/api/complaints/${id}/status`, {
+      method: 'PUT',
+      body: JSON.stringify({ status, refundAmount }),
     });
   },
 };
