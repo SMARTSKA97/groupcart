@@ -79,21 +79,21 @@ Screenshots available under:
 ## 🏗️ Architecture
 
 Read the comprehensive technical architecture guide:
-👉 **[architecture.md](file:///c:/Users/Administrator/Documents/Workspaces/groupcart/docs/architecture.md)**
+👉 **[architecture.md](docs/architecture.md)**
 
 ---
 
 ## 🔄 Workflow
 
 Read the detailed state machine and process flow guide:
-👉 **[workflow.md](file:///c:/Users/Administrator/Documents/Workspaces/groupcart/docs/workflow.md)**
+👉 **[workflow.md](docs/workflow.md)**
 
 ---
 
 ## 📖 User & Admin Guides
 
 For step-by-step instructions on running or using the app:
-👉 **[TUTORIAL.md](file:///c:/Users/Administrator/Documents/Workspaces/groupcart/docs/tutorial.md)**
+👉 **[TUTORIAL.md](docs/tutorial.md)**
 
 ---
 
@@ -114,16 +114,44 @@ For step-by-step instructions on running or using the app:
 
 ## 🚀 Quick Start
 
-### Docker Compose (One-Liner)
-
-Download the configuration and start the application instantly with:
+### 1. Download the config files
 
 ```bash
-# On Linux / macOS / Git Bash:
-curl -sSL https://raw.githubusercontent.com/SMARTSKA97/groupcart/main/docker-compose.yml -o docker-compose.yml && docker compose up -d
+# Linux / macOS / Git Bash
+curl -sSL https://raw.githubusercontent.com/SMARTSKA97/groupcart/main/docker-compose.yml -o docker-compose.yml
+curl -sSL https://raw.githubusercontent.com/SMARTSKA97/groupcart/main/.env.example -o .env
 
-# On Windows PowerShell:
-curl.exe -sSL https://raw.githubusercontent.com/SMARTSKA97/groupcart/main/docker-compose.yml -o docker-compose.yml; docker compose up -d
+# Windows PowerShell
+curl.exe -sSL https://raw.githubusercontent.com/SMARTSKA97/groupcart/main/docker-compose.yml -o docker-compose.yml
+curl.exe -sSL https://raw.githubusercontent.com/SMARTSKA97/groupcart/main/.env.example -o .env
+```
+
+### 2. Set your secrets in `.env`
+
+Open `.env` and fill in your own values — **`JWT_SECRET` is required**:
+
+```bash
+# Generate a secure JWT secret (run this once and paste the output into .env)
+# Linux / macOS / Git Bash
+openssl rand -hex 32
+
+# Windows PowerShell (requires OpenSSL or Git Bash)
+[System.Convert]::ToBase64String((1..32 | ForEach-Object { Get-Random -Maximum 256 }))
+```
+
+Your `.env` should look like:
+
+```env
+MONGO_USER=admin
+MONGO_PASSWORD=your_strong_password
+ADMIN_PASSWORD=your_admin_password
+JWT_SECRET=paste_the_64_hex_chars_here
+```
+
+### 3. Start the application
+
+```bash
+docker compose up -d
 ```
 
 Open:
@@ -132,7 +160,10 @@ Open:
 http://localhost
 ```
 
-For building locally or development, use **[docker-compose.dev.yml](file:///c:/Users/Administrator/Documents/Workspaces/groupcart/docker-compose.dev.yml)**:
+> **Note:** All traffic goes through the nginx reverse proxy on port 80. Port 3000 is internal only and not reachable from outside the Docker network.
+
+For local development (builds from source):
+
 ```bash
 docker compose -f docker-compose.dev.yml up -d --build
 ```
@@ -157,21 +188,47 @@ docker pull ghcr.io/smartska97/groupcart:v2.0.0
 
 ## 🔐 Environment Variables
 
-| Variable       | Description              | Default value |
-| -------------- | ------------------------ | ------------- |
-| MONGO_USER     | MongoDB Username         | `admin`       |
-| MONGO_PASSWORD | MongoDB Password         | `adminpassword` |
-| ADMIN_PASSWORD | Admin Dashboard Password | `admin123`    |
+| Variable         | Required | Description                                                   | Default         |
+| ---------------- | -------- | ------------------------------------------------------------- | --------------- |
+| `JWT_SECRET`     | **Yes**  | 64-char hex secret for signing auth tokens. Generate with `openssl rand -hex 32`. App refuses to start without it. | *(none)* |
+| `MONGO_USER`     | No       | MongoDB username                                              | `admin`         |
+| `MONGO_PASSWORD` | No       | MongoDB password — **change before exposing to your network** | `adminpassword` |
+| `ADMIN_PASSWORD` | No       | Password for registering the `admin` account                  | `admin123`      |
+
+All variables are read from a `.env` file in the same directory as `docker-compose.yml`. See [`.env.example`](.env.example) for a ready-to-copy template.
+
+> ⚠️ The defaults for `MONGO_PASSWORD` and `ADMIN_PASSWORD` are intentionally weak. Always override them before deploying, even on a home LAN.
+
+---
+
+## 🔒 Security
+
+GroupCart is designed for trusted LAN use, not public internet exposure. The following hardening is applied:
+
+| Area | Measure |
+| ---- | ------- |
+| **Passwords** | PBKDF2-SHA512 with 310,000 iterations (OWASP 2024). Existing hashes are rehashed to current strength on next login. |
+| **Tokens** | HS256 JWT; timing-safe signature verification; 7-day expiry. |
+| **Sessions** | `JWT_SECRET` must be set externally — no ephemeral per-restart secret. |
+| **Auth enforcement** | All write routes and the SSE stream require a valid token. Status/bill mutations require admin. |
+| **Scraper SSRF** | `/api/scrape-url` blocks requests to loopback, RFC-1918, and link-local addresses. |
+| **Rate limiting** | Login endpoint: 10 attempts per IP per 15 minutes (in-memory, no extra deps). |
+| **Response safety** | `passwordHash`, `salt`, and `hashIterations` are never included in API responses. |
+| **XSS** | Dynamic button labels use `data-*` attributes + delegated listeners, not inline `onclick` string interpolation. |
+| **Network** | Port 3000 is `expose:`-only — internal to Docker. Only port 80 (nginx) is reachable from the LAN. |
+| **Headers** | `X-Content-Type-Options`, `X-Frame-Options`, `X-XSS-Protection`, `Referrer-Policy`, `CSP` set by both the app and nginx. |
+| **Body limit** | JSON request body capped at 2 MB. |
 
 ---
 
 ## 📦 Releases
 
-| Version | Highlights                                                       | Release Notes |
-| ------- | ---------------------------------------------------------------- | ------------- |
-| V1      | Initial Release                                                  | - |
-| V2      | MongoDB, SSE, Payment Tracking, Favorites, Session History, GHCR | **[RELEASE_NOTES_V2.md](file:///c:/Users/Administrator/Documents/Workspaces/groupcart/docs/release_notes_v2.md)** |
-| V3      | Authentication, History, Exports *(Planned)*                     | - |
+| Version | Highlights                                                                    | Release Notes |
+| ------- | ----------------------------------------------------------------------------- | ------------- |
+| V1      | Initial release                                                               | — |
+| V2      | MongoDB, SSE, Payment Tracking, Favorites, Session History, GHCR              | [RELEASE_NOTES_V2.md](docs/release_notes_v2.md) |
+| V2.1    | Security hardening: auth on all routes, PBKDF2 upgrade, SSRF guard, XSS fixes | — |
+| V3      | Authentication improvements, History, Exports *(Planned)*                     | — |
 
 ---
 
