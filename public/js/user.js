@@ -290,7 +290,7 @@ const UserView = {
               
               <!-- Complaint Option (Only if session is in ordered/delivered/settled states, or order is confirmed) -->
               ${(isOwn && (isSessionClosed || order.status === 'confirmed')) ? `
-                <button type="button" class="order-link" onclick="event.stopPropagation(); UserView.openComplaintModal('${order.id}', '${escapeHtml(order.productName)}')" style="background: none; border: none; padding: 0; color: var(--danger); cursor: pointer; font-size: 0.75rem;">⚠️ Report Issue</button>
+                <button type="button" class="order-link complaint-btn" data-order-id="${order.id}" data-product-name="${escapeHtml(order.productName)}" style="background: none; border: none; padding: 0; color: var(--danger); cursor: pointer; font-size: 0.75rem;">⚠️ Report Issue</button>
               ` : ''}
             </div>
           </div>
@@ -1400,3 +1400,12 @@ const UserView = {
     updateNavBadges();
   },
 };
+
+// Delegated click handler for dynamically rendered complaint buttons
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.complaint-btn');
+  if (btn) {
+    e.stopPropagation();
+    UserView.openComplaintModal(btn.dataset.orderId, btn.dataset.productName);
+  }
+});

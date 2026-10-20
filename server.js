@@ -13,15 +13,21 @@ const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/groupcart'
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
 
 // Password & Token Helpers
+const PBKDF2_ITERATIONS = 310000; // OWASP 2024 recommendation for PBKDF2-SHA512
+
 function hashPassword(password) {
   const salt = crypto.randomBytes(16).toString('hex');
-  const hash = crypto.pbkdf2Sync(password, salt, 1000, 64, 'sha512').toString('hex');
-  return { salt, hash };
+  const hash = crypto.pbkdf2Sync(password, salt, PBKDF2_ITERATIONS, 64, 'sha512').toString('hex');
+  return { salt, hash, iterations: PBKDF2_ITERATIONS };
 }
 
-function verifyPassword(password, salt, hash) {
-  const verifyHash = crypto.pbkdf2Sync(password, salt, 1000, 64, 'sha512').toString('hex');
-  return hash === verifyHash;
+function verifyPassword(password, salt, hash, iterations = PBKDF2_ITERATIONS) {
+  const verifyHash = crypto.pbkdf2Sync(password, salt, iterations, 64, 'sha512').toString('hex');
+  try {
+    return crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(verifyHash, 'hex'));
+  } catch {
+    return false;
+  }
 }
 
 function generateToken(payload) {
@@ -33,18 +39,84 @@ function generateToken(payload) {
 
 function verifyToken(token) {
   try {
-    const [header, body, signature] = token.split('.');
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    const [header, body, signature] = parts;
     const expectedSignature = crypto.createHmac('sha256', JWT_SECRET).update(`${header}.${body}`).digest('base64url');
-    if (signature !== expectedSignature) return null;
-    
+    // Timing-safe comparison to prevent timing attacks
+    const sigBuf = Buffer.from(signature, 'base64url');
+    const expBuf = Buffer.from(expectedSignature, 'base64url');
+    if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) return null;
+
     const payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
     if (payload.exp && Date.now() / 1000 > payload.exp) return null;
-    
+
     return payload;
   } catch (e) {
     return null;
   }
 }
+
+// Strip sensitive fields before sending user objects to clients
+function safeUser(user) {
+  const obj = user.toObject ? user.toObject() : { ...user };
+  delete obj.passwordHash;
+  delete obj.salt;
+  delete obj.hashIterations;
+  return obj;
+}
+
+// SSRF protection: block private/loopback IPs and non-http(s) schemes
+function isSafeUrl(urlStr) {
+  let parsed;
+  try {
+    parsed = new URL(urlStr);
+  } catch {
+    return false;
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol)) return false;
+  const host = parsed.hostname.toLowerCase();
+  // Block loopback and private ranges by hostname patterns
+  if (host === 'localhost' || host === '0.0.0.0' || host === '::1') return false;
+  // IPv4 private/loopback ranges
+  const ipv4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (ipv4) {
+    const [, a, b] = ipv4.map(Number);
+    if (a === 10) return false;                          // 10.0.0.0/8
+    if (a === 127) return false;                         // 127.0.0.0/8
+    if (a === 172 && b >= 16 && b <= 31) return false;  // 172.16.0.0/12
+    if (a === 192 && b === 168) return false;            // 192.168.0.0/16
+    if (a === 169 && b === 254) return false;            // 169.254.0.0/16 (link-local)
+  }
+  // IPv6 loopback / link-local
+  if (host === '::1' || host.startsWith('fe80:') || host.startsWith('[fe80:') || host === '[::1]') return false;
+  return true;
+}
+
+// Simple in-memory rate limiter for login (no extra deps)
+const loginAttempts = new Map();
+const LOGIN_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
+const LOGIN_MAX_ATTEMPTS = 10;
+
+function checkLoginRateLimit(ip) {
+  const now = Date.now();
+  const record = loginAttempts.get(ip) || { count: 0, windowStart: now };
+  if (now - record.windowStart > LOGIN_WINDOW_MS) {
+    record.count = 1;
+    record.windowStart = now;
+  } else {
+    record.count++;
+  }
+  loginAttempts.set(ip, record);
+  return record.count <= LOGIN_MAX_ATTEMPTS;
+}
+// Purge stale rate-limit records every 30 minutes
+setInterval(() => {
+  const cutoff = Date.now() - LOGIN_WINDOW_MS;
+  for (const [ip, rec] of loginAttempts) {
+    if (rec.windowStart < cutoff) loginAttempts.delete(ip);
+  }
+}, 30 * 60 * 1000);
 
 // Authentication Middleware
 async function authenticateToken(req, res, next) {
@@ -76,8 +148,19 @@ function requireAdmin(req, res, next) {
 }
 
 // Middleware
-app.use(express.json());
+app.use(express.json({ limit: '2mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
+// Security headers
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Content-Security-Policy',
+    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self';"
+  );
+  next();
+});
 
 // --- MongoDB Schemas & Models ---
 const userSchema = new mongoose.Schema({
@@ -85,9 +168,12 @@ const userSchema = new mongoose.Schema({
   name: { type: String, required: true },
   passwordHash: { type: String },
   salt: { type: String },
+  hashIterations: { type: Number, default: 310000 }, // migration: existing users may have 1000
   isAdmin: { type: Boolean, default: false },
   createdAt: { type: Date, default: Date.now }
 }, { id: false });
+// Case-insensitive unique index so duplicate names aren't accepted
+userSchema.index({ name: 1 }, { unique: true, collation: { locale: 'en', strength: 2 } });
 const User = mongoose.model('User', userSchema);
 
 const appSchema = new mongoose.Schema({
@@ -315,6 +401,12 @@ function broadcastSSE(event, data) {
 }
 
 app.get('/api/events', (req, res) => {
+  // Authenticate via query param (EventSource API doesn't support custom headers)
+  const token = req.query.token;
+  if (!token || !verifyToken(token)) {
+    res.status(401).end('Unauthorized');
+    return;
+  }
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
@@ -328,6 +420,12 @@ app.get('/api/events', (req, res) => {
 // --- Auth ---
 app.post('/api/auth/login', async (req, res) => {
   try {
+    // Rate-limit by IP
+    const clientIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown';
+    if (!checkLoginRateLimit(clientIp)) {
+      return res.status(429).json({ error: 'Too many login attempts. Please wait 15 minutes.' });
+    }
+
     const { name, password, newPassword, isRegister } = req.body;
     if (!name || !name.trim()) return res.status(400).json({ error: 'Name is required' });
 
@@ -359,17 +457,18 @@ app.post('/api/auth/login', async (req, res) => {
         }
       }
 
-      const { salt, hash } = hashPassword(password);
+      const { salt, hash, iterations } = hashPassword(password);
       user = new User({
         id: generateId(),
         name: name.trim(),
         passwordHash: hash,
         salt,
+        hashIterations: iterations,
         isAdmin: isAdminUser,
         createdAt: new Date()
       });
       await user.save();
-      broadcastSSE('user-joined', { user });
+      broadcastSSE('user-joined', { user: safeUser(user) });
     } else {
       // Existing user
       if (!user.passwordHash) {
@@ -379,9 +478,10 @@ app.post('/api/auth/login', async (req, res) => {
           if (!passwordRegex.test(newPassword)) {
             return res.status(400).json({ error: 'Password must be at least 6 characters long and contain alphanumeric and special characters.' });
           }
-          const { salt, hash } = hashPassword(newPassword);
+          const { salt, hash, iterations } = hashPassword(newPassword);
           user.passwordHash = hash;
           user.salt = salt;
+          user.hashIterations = iterations;
           if (isAdminUser) user.isAdmin = true;
           await user.save();
         } else {
@@ -392,10 +492,19 @@ app.post('/api/auth/login', async (req, res) => {
         if (!password) {
           return res.status(400).json({ error: 'Password is required' });
         }
-        if (!verifyPassword(password, user.salt, user.passwordHash)) {
+        if (!verifyPassword(password, user.salt, user.passwordHash, user.hashIterations || 1000)) {
           return res.status(401).json({ error: 'Incorrect password' });
         }
-        
+
+        // On-the-fly rehash: upgrade legacy 1000-iteration hashes to current strength
+        if ((user.hashIterations || 1000) < PBKDF2_ITERATIONS) {
+          const { salt, hash, iterations } = hashPassword(password);
+          user.salt = salt;
+          user.passwordHash = hash;
+          user.hashIterations = iterations;
+          await user.save();
+        }
+
         // Safety: Auto upgrade user.isAdmin if username is admin
         if (isAdminUser && !user.isAdmin) {
           user.isAdmin = true;
@@ -405,7 +514,7 @@ app.post('/api/auth/login', async (req, res) => {
     }
 
     const token = generateToken({ userId: user.id, username: user.name, isAdmin: user.isAdmin });
-    res.json({ user, token });
+    res.json({ user: safeUser(user), token });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Internal server error' });
@@ -420,7 +529,7 @@ app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
     }
 
     const user = req.user;
-    if (user.passwordHash && !verifyPassword(password, user.salt, user.passwordHash)) {
+    if (user.passwordHash && !verifyPassword(password, user.salt, user.passwordHash, user.hashIterations || 1000)) {
       return res.status(401).json({ error: 'Incorrect current password' });
     }
 
@@ -429,9 +538,10 @@ app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'New password must be at least 6 characters and contain alphanumeric/special characters.' });
     }
 
-    const { salt, hash } = hashPassword(newPassword);
+    const { salt, hash, iterations } = hashPassword(newPassword);
     user.passwordHash = hash;
     user.salt = salt;
+    user.hashIterations = iterations;
     await user.save();
 
     res.json({ success: true });
@@ -456,9 +566,10 @@ app.post('/api/auth/admin-reset-password', authenticateToken, requireAdmin, asyn
     const user = await User.findOne({ id: userId });
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    const { salt, hash } = hashPassword(newPassword);
+    const { salt, hash, iterations } = hashPassword(newPassword);
     user.passwordHash = hash;
     user.salt = salt;
+    user.hashIterations = iterations;
     await user.save();
 
     res.json({ success: true });
@@ -470,7 +581,8 @@ app.post('/api/auth/admin-reset-password', authenticateToken, requireAdmin, asyn
 
 app.get('/api/auth/users', authenticateToken, async (req, res) => {
   try {
-    const users = await User.find();
+    // Project out password fields — never send hashes to clients
+    const users = await User.find({}, '-passwordHash -salt -hashIterations');
     res.json({ users });
   } catch (err) {
     console.error(err);
@@ -610,8 +722,8 @@ app.put('/api/orders/:id', authenticateToken, async (req, res) => {
       }
     }
 
-    // Track admin price override
-    if (req.body.adminOverride) {
+    // Track admin price override — only settable by actual admins
+    if (req.body.adminOverride && req.user.isAdmin) {
       order.adminModified = true;
       order.adminModifiedBy = req.body.adminName || req.user.name || 'Admin';
       order.adminModifiedAt = new Date();
@@ -651,7 +763,7 @@ app.delete('/api/orders/:id', authenticateToken, async (req, res) => {
 
 // --- Order Status (Admin) ---
 // IMPORTANT: bulk-status route must come before :id/status to avoid matching 'bulk-status' as :id
-app.put('/api/orders/bulk-status', async (req, res) => {
+app.put('/api/orders/bulk-status', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { appId, status, adminName } = req.body;
     const validStatuses = ['pending', 'confirmed', 'out-of-stock', 'returned', 'not-delivered'];
@@ -679,7 +791,7 @@ app.put('/api/orders/bulk-status', async (req, res) => {
   }
 });
 
-app.put('/api/orders/:id/status', async (req, res) => {
+app.put('/api/orders/:id/status', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { status, statusNote, adminName } = req.body;
     const validStatuses = ['pending', 'confirmed', 'out-of-stock', 'returned', 'not-delivered'];
@@ -705,7 +817,7 @@ app.put('/api/orders/:id/status', async (req, res) => {
 });
 
 // --- Bills (Admin) ---
-app.get('/api/bills', async (req, res) => {
+app.get('/api/bills', authenticateToken, async (req, res) => {
   try {
     const activeSession = await getActiveSession();
     const sessionId = req.query.sessionId || activeSession.id;
@@ -717,7 +829,7 @@ app.get('/api/bills', async (req, res) => {
   }
 });
 
-app.post('/api/bills', async (req, res) => {
+app.post('/api/bills', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { appId, actualAmount } = req.body;
     if (!appId || actualAmount === undefined) {
@@ -1088,11 +1200,16 @@ function extractFromJSONLD($) {
   return { name, price };
 }
 
-app.post('/api/scrape-url', async (req, res) => {
+app.post('/api/scrape-url', authenticateToken, async (req, res) => {
   try {
     const { url } = req.body;
     if (!url) {
       return res.status(400).json({ error: 'URL is required' });
+    }
+
+    // SSRF protection: only allow public HTTP(S) URLs
+    if (!isSafeUrl(url)) {
+      return res.status(400).json({ error: 'URL is not allowed' });
     }
 
     let platform = '';

@@ -196,7 +196,7 @@ const AdminView = {
           <div class="admin-status-controls">
             ${this._renderStatusChips(order)}
             ${(order.status === 'out-of-stock' && !isReadOnly) ? `
-              <button class="status-chip" onclick="AdminView.openOOSMoveModal('${order.id}', '${escapeHtml(order.productName)}')" style="background: var(--accent-secondary); color: white; border: none; font-size: 0.72rem; padding: 2px 6px; cursor: pointer; border-radius: 4px; display: inline-flex; align-items: center; gap: 2px;">🔄 Move</button>
+              <button class="status-chip oos-move-btn" data-order-id="${order.id}" data-product-name="${escapeHtml(order.productName)}" style="background: var(--accent-secondary); color: white; border: none; font-size: 0.72rem; padding: 2px 6px; cursor: pointer; border-radius: 4px; display: inline-flex; align-items: center; gap: 2px;">🔄 Move</button>
             ` : ''}
           </div>
         </div>`;
@@ -1131,3 +1131,9 @@ const AdminView = {
     Tutorial.show(slides);
   },
 };
+
+// Delegated click handler for dynamically rendered OOS-move buttons
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.oos-move-btn');
+  if (btn) AdminView.openOOSMoveModal(btn.dataset.orderId, btn.dataset.productName);
+});

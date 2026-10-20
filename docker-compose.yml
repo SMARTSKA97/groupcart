@@ -22,12 +22,16 @@ services:
     depends_on:
       mongodb:
         condition: service_started
-    ports:
-      - "3000:3000"
+    # Port 3000 is NOT exposed externally — all traffic must go through the nginx reverse proxy
+    expose:
+      - "3000"
     environment:
       - NODE_ENV=production
       - MONGO_URI=mongodb://${MONGO_USER:-admin}:${MONGO_PASSWORD:-adminpassword}@mongodb:27017/groupcart?authSource=admin
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin123}
+      # JWT_SECRET must be set in your .env file or host environment — a stable secret survives restarts
+      # Generate one with: openssl rand -hex 32
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET must be set in .env or environment}
     volumes:
       - ./data:/app/data
 
@@ -45,6 +49,13 @@ services:
         server {
             listen 80;
             server_name localhost _;
+
+            # Security headers
+            add_header X-Content-Type-Options "nosniff" always;
+            add_header X-Frame-Options "SAMEORIGIN" always;
+            add_header X-XSS-Protection "1; mode=block" always;
+            add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+            add_header Permissions-Policy "geolocation=(), microphone=(), camera=()" always;
 
             location / {
                 proxy_pass http://groupcart:3000;

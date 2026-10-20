@@ -249,7 +249,8 @@ const sseHandlers = {};
 
 function connectSSE() {
   if (eventSource) eventSource.close();
-  eventSource = new EventSource('/api/events');
+  const token = (Auth && Auth.token) ? encodeURIComponent(Auth.token) : '';
+  eventSource = new EventSource(`/api/events?token=${token}`);
 
   eventSource.onopen = () => console.log('SSE connected');
   eventSource.onerror = () => {
